@@ -1702,6 +1702,32 @@ mod tests {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
+    // Runs f with a controlled HERDR_PANE_ID. The lock serializes env access and the
+    // drop guard restores the previous value even if f panics.
+    fn with_caller_pane_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        struct RestoreEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(previous) => std::env::set_var("HERDR_PANE_ID", previous),
+                    None => std::env::remove_var("HERDR_PANE_ID"),
+                }
+            }
+        }
+
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _lock = LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = RestoreEnv(std::env::var_os("HERDR_PANE_ID"));
+        match value {
+            Some(value) => std::env::set_var("HERDR_PANE_ID", value),
+            None => std::env::remove_var("HERDR_PANE_ID"),
+        }
+        f()
+    }
+
     #[test]
     fn parse_pane_split_args_accepts_ratio() {
         let params = parse_pane_split_args(
@@ -1965,6 +1991,60 @@ mod tests {
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, PaneDirection::Down);
+    }
+
+    // --current starts from the caller pane, not the UI-focused pane.
+    #[test]
+    fn parse_pane_neighbor_args_current_uses_caller_pane() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_neighbor_args(&args(&["--direction", "right", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-1".into()));
+        assert_eq!(params.direction, PaneDirection::Right);
+    }
+
+    // Without HERDR_PANE_ID the server keeps resolving the focused pane.
+    #[test]
+    fn parse_pane_neighbor_args_current_without_env_keeps_focused_fallback() {
+        let params = with_caller_pane_env(None, || {
+            parse_pane_neighbor_args(&args(&["--direction", "right", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
+    fn parse_pane_neighbor_args_explicit_pane_ignores_caller_env() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_neighbor_args(&args(&["--direction", "left", "--pane", "issue-2"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-2".into()));
+    }
+
+    #[test]
+    fn parse_pane_neighbor_args_omitted_target_ignores_caller_env() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_neighbor_args(&args(&["--direction", "left"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
+    fn parse_pane_focus_args_current_uses_caller_pane() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_focus_args(&args(&["--direction", "up", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-1".into()));
+        assert_eq!(params.direction, PaneDirection::Up);
     }
 
     #[test]
