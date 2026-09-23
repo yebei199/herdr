@@ -267,7 +267,7 @@ fn parse_pane_neighbor_args(args: &[String]) -> Result<PaneNeighborParams, Strin
                 index += 2;
             }
             "--current" => {
-                pane_id = None;
+                pane_id = super::target::caller_pane_id().map(|id| super::normalize_pane_id(&id));
                 index += 1;
             }
             "--direction" => {
