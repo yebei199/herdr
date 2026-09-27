@@ -914,6 +914,8 @@ fn pane_move_usage() -> String {
 
 fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
     let mut pane_id = None;
+    // Only an explicit --pane conflicts with --source-pane/--target-pane; --current is ignored there.
+    let mut pane_flag = false;
     let mut direction = None;
     let mut source_pane_id = None;
     let mut target_pane_id = None;
@@ -926,10 +928,12 @@ fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
                     return Err("missing value for --pane".into());
                 };
                 pane_id = Some(super::normalize_pane_id(value));
+                pane_flag = true;
                 index += 2;
             }
             "--current" => {
-                pane_id = None;
+                pane_id = super::target::caller_pane_id().map(|id| super::normalize_pane_id(&id));
+                pane_flag = false;
                 index += 1;
             }
             "--direction" => {
@@ -965,7 +969,7 @@ fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
             direction,
             ..PaneSwapParams::default()
         }),
-        (false, true) if pane_id.is_none() && source_pane_id.is_some() && target_pane_id.is_some() => {
+        (false, true) if !pane_flag && source_pane_id.is_some() && target_pane_id.is_some() => {
             Ok(PaneSwapParams {
                 source_pane_id,
                 target_pane_id,
@@ -2084,6 +2088,85 @@ mod tests {
             with_caller_pane_env(None, || parse_pane_zoom_args(&args(&["--current"]))).unwrap();
 
         assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
+    fn parse_pane_swap_args_current_uses_caller_pane() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_swap_args(&args(&["--direction", "right", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-1".into()));
+        assert_eq!(params.direction, Some(PaneDirection::Right));
+    }
+
+    #[test]
+    fn parse_pane_swap_args_current_without_env_keeps_focused_fallback() {
+        let params = with_caller_pane_env(None, || {
+            parse_pane_swap_args(&args(&["--direction", "right", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
+    fn parse_pane_swap_args_explicit_pane_ignores_caller_env() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_swap_args(&args(&["--direction", "left", "--pane", "issue-2"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-2".into()));
+    }
+
+    #[test]
+    fn parse_pane_swap_args_omitted_target_ignores_caller_env() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_swap_args(&args(&["--direction", "left"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    // --current has no effect on the explicit form, with or without HERDR_PANE_ID.
+    #[test]
+    fn parse_pane_swap_args_explicit_form_accepts_current_regardless_of_env() {
+        for env in [Some("issue-9"), None] {
+            let params = with_caller_pane_env(env, || {
+                parse_pane_swap_args(&args(&[
+                    "--current",
+                    "--source-pane",
+                    "issue-1",
+                    "--target-pane",
+                    "issue-2",
+                ]))
+            })
+            .unwrap();
+
+            assert_eq!(params.pane_id, None);
+            assert_eq!(params.source_pane_id, Some("issue-1".into()));
+            assert_eq!(params.target_pane_id, Some("issue-2".into()));
+        }
+    }
+
+    #[test]
+    fn parse_pane_swap_args_explicit_form_rejects_pane() {
+        let err = with_caller_pane_env(Some("issue-9"), || {
+            parse_pane_swap_args(&args(&[
+                "--pane",
+                "issue-3",
+                "--source-pane",
+                "issue-1",
+                "--target-pane",
+                "issue-2",
+            ]))
+        })
+        .unwrap_err();
+
+        assert!(err.contains("usage: herdr pane swap"));
     }
 
     #[test]
