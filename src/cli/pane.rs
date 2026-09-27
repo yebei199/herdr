@@ -914,6 +914,8 @@ fn pane_move_usage() -> String {
 
 fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
     let mut pane_id = None;
+    // Only an explicit --pane conflicts with --source-pane/--target-pane; --current is ignored there.
+    let mut pane_flag = false;
     let mut direction = None;
     let mut source_pane_id = None;
     let mut target_pane_id = None;
@@ -926,10 +928,12 @@ fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
                     return Err("missing value for --pane".into());
                 };
                 pane_id = Some(super::normalize_pane_id(value));
+                pane_flag = true;
                 index += 2;
             }
             "--current" => {
-                pane_id = None;
+                pane_id = super::target::caller_pane_id().map(|id| super::normalize_pane_id(&id));
+                pane_flag = false;
                 index += 1;
             }
             "--direction" => {
@@ -965,7 +969,7 @@ fn parse_pane_swap_args(args: &[String]) -> Result<PaneSwapParams, String> {
             direction,
             ..PaneSwapParams::default()
         }),
-        (false, true) if pane_id.is_none() && source_pane_id.is_some() && target_pane_id.is_some() => {
+        (false, true) if !pane_flag && source_pane_id.is_some() && target_pane_id.is_some() => {
             Ok(PaneSwapParams {
                 source_pane_id,
                 target_pane_id,
