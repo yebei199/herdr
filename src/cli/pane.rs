@@ -2048,6 +2048,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_pane_resize_args_current_uses_caller_pane() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_resize_args(&args(&["--direction", "left", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-1".into()));
+    }
+
+    #[test]
+    fn parse_pane_resize_args_current_without_env_keeps_focused_fallback() {
+        let params = with_caller_pane_env(None, || {
+            parse_pane_resize_args(&args(&["--direction", "left", "--current"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
+    fn parse_pane_zoom_args_current_uses_caller_pane() {
+        let params = with_caller_pane_env(Some("issue-1"), || {
+            parse_pane_zoom_args(&args(&["--current", "--on"]))
+        })
+        .unwrap();
+
+        assert_eq!(params.pane_id, Some("issue-1".into()));
+        assert_eq!(params.mode, PaneZoomMode::On);
+    }
+
+    #[test]
+    fn parse_pane_zoom_args_current_without_env_keeps_focused_fallback() {
+        let params =
+            with_caller_pane_env(None, || parse_pane_zoom_args(&args(&["--current"]))).unwrap();
+
+        assert_eq!(params.pane_id, None);
+    }
+
+    #[test]
     fn parse_optional_current_pane_args_accepts_current_target() {
         let pane_id =
             parse_optional_current_pane_args(&args(&["--current"]), Some("issue-1")).unwrap();
