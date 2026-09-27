@@ -317,7 +317,7 @@ fn parse_pane_resize_args(args: &[String]) -> Result<PaneResizeParams, String> {
                 index += 2;
             }
             "--current" => {
-                pane_id = None;
+                pane_id = super::target::caller_pane_id().map(|id| super::normalize_pane_id(&id));
                 index += 1;
             }
             "--direction" => {
@@ -393,7 +393,7 @@ fn parse_pane_zoom_args(args: &[String]) -> Result<PaneZoomParams, String> {
                 index += 2;
             }
             "--current" => {
-                pane_id = None;
+                pane_id = super::target::caller_pane_id().map(|id| super::normalize_pane_id(&id));
                 index += 1;
             }
             "--toggle" => {
