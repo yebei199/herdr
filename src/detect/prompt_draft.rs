@@ -14,6 +14,12 @@
 //! hint through a pool of example prompts). The one reliable signal is the SGR "faint"/"dim"
 //! (`\x1b[2m`) attribute both TUIs wrap placeholder text in and never apply to real input —
 //! confirmed by hand for both Claude Code and Codex during the #149 investigation.
+//!
+//! Not wired to any send path yet: the default action for a detected draft (reject vs.
+//! include-with-notice) and the `--wait-empty`/`--allow-draft` options are still awaiting a
+//! user decision (#149). Remove the `allow(dead_code)` below in the increment that wires this
+//! into `queue_agent_prompt`/`pane send-text`.
+#![allow(dead_code)]
 
 /// What a prompt-box read found.
 #[derive(Debug, Clone, PartialEq, Eq)]
