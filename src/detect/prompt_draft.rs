@@ -29,22 +29,32 @@ pub enum PromptBoxState {
 
 fn is_horizontal_rule(line: &str) -> bool {
     let trimmed = line.trim();
-    !trimmed.is_empty() && trimmed.chars().all(|ch| ch == '─')
+    !trimmed.is_empty()
+        && trimmed.chars().all(|ch| ch == '─')
 }
 
 /// Claude Code: box between two `─` rules, `❯` marks the (possibly multi-line) prompt.
-pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> PromptBoxState {
-    let plain_lines: Vec<&str> = plain_screen.lines().collect();
-    let ansi_lines: Vec<&str> = ansi_screen.lines().collect();
+pub fn classify_claude_prompt_box(
+    plain_screen: &str,
+    ansi_screen: &str,
+) -> PromptBoxState {
+    let plain_lines: Vec<&str> =
+        plain_screen.lines().collect();
+    let ansi_lines: Vec<&str> =
+        ansi_screen.lines().collect();
     if plain_lines.len() != ansi_lines.len() {
         return PromptBoxState::Unreadable;
     }
-    let Some(top) = plain_lines.iter().position(|line| is_horizontal_rule(line)) else {
+    let Some(top) = plain_lines
+        .iter()
+        .position(|line| is_horizontal_rule(line))
+    else {
         return PromptBoxState::Unreadable;
     };
-    let Some(marker_offset) = plain_lines[top + 1..]
-        .iter()
-        .position(|line| line.trim_start().starts_with('❯'))
+    let Some(marker_offset) =
+        plain_lines[top + 1..].iter().position(|line| {
+            line.trim_start().starts_with('❯')
+        })
     else {
         return PromptBoxState::Unreadable;
     };
@@ -54,19 +64,30 @@ pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> Prom
         .position(|line| is_horizontal_rule(line))
         .map(|relative| marker + 1 + relative)
         .unwrap_or(plain_lines.len());
-    classify_body(&plain_lines[marker..end], &ansi_lines[marker..end], '❯')
+    classify_body(
+        &plain_lines[marker..end],
+        &ansi_lines[marker..end],
+        '❯',
+    )
 }
 
 /// Codex: no border. `›` marks the current prompt line; the block ends at the next blank row.
-pub fn classify_codex_prompt_box(plain_screen: &str, ansi_screen: &str) -> PromptBoxState {
-    let plain_lines: Vec<&str> = plain_screen.lines().collect();
-    let ansi_lines: Vec<&str> = ansi_screen.lines().collect();
+pub fn classify_codex_prompt_box(
+    plain_screen: &str,
+    ansi_screen: &str,
+) -> PromptBoxState {
+    let plain_lines: Vec<&str> =
+        plain_screen.lines().collect();
+    let ansi_lines: Vec<&str> =
+        ansi_screen.lines().collect();
     if plain_lines.len() != ansi_lines.len() {
         return PromptBoxState::Unreadable;
     }
-    let Some(marker) = plain_lines
-        .iter()
-        .position(|line| line.trim() == "›" || line.trim_start().starts_with("› "))
+    let Some(marker) =
+        plain_lines.iter().position(|line| {
+            line.trim() == "›"
+                || line.trim_start().starts_with("› ")
+        })
     else {
         return PromptBoxState::Unreadable;
     };
@@ -75,29 +96,44 @@ pub fn classify_codex_prompt_box(plain_screen: &str, ansi_screen: &str) -> Promp
         .position(|line| line.trim().is_empty())
         .map(|relative| marker + 1 + relative)
         .unwrap_or(plain_lines.len());
-    classify_body(&plain_lines[marker..end], &ansi_lines[marker..end], '›')
+    classify_body(
+        &plain_lines[marker..end],
+        &ansi_lines[marker..end],
+        '›',
+    )
 }
 
-fn classify_body(plain_rows: &[&str], ansi_rows: &[&str], marker: char) -> PromptBoxState {
-    if plain_rows.is_empty() || ansi_rows.len() != plain_rows.len() {
+fn classify_body(
+    plain_rows: &[&str],
+    ansi_rows: &[&str],
+    marker: char,
+) -> PromptBoxState {
+    if plain_rows.is_empty()
+        || ansi_rows.len() != plain_rows.len()
+    {
         return PromptBoxState::Unreadable;
     }
     let text = plain_rows
         .iter()
-        .map(|line| line.trim_start_matches(marker).trim_start())
+        .map(|line| {
+            line.trim_start_matches(marker).trim_start()
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return PromptBoxState::EmptyOrPlaceholder;
     }
-    let all_faint = ansi_rows.iter().enumerate().all(|(index, row)| {
-        if index == 0 {
-            row_is_all_faint(strip_leading_marker(row, marker))
-        } else {
-            row_is_all_faint(row)
-        }
-    });
+    let all_faint =
+        ansi_rows.iter().enumerate().all(|(index, row)| {
+            if index == 0 {
+                row_is_all_faint(strip_leading_marker(
+                    row, marker,
+                ))
+            } else {
+                row_is_all_faint(row)
+            }
+        });
     if all_faint {
         PromptBoxState::EmptyOrPlaceholder
     } else {
@@ -109,7 +145,10 @@ fn classify_body(plain_rows: &[&str], ansi_rows: &[&str], marker: char) -> Promp
 /// itself (which some TUIs style independently of the text that follows it) never counts toward
 /// the faint check. Escape sequences before the marker are irrelevant either way since the scan
 /// below tracks faint state from scratch.
-fn strip_leading_marker(ansi_row: &str, marker: char) -> &str {
+fn strip_leading_marker(
+    ansi_row: &str,
+    marker: char,
+) -> &str {
     for (index, ch) in ansi_row.char_indices() {
         if ch == marker {
             return &ansi_row[index + ch.len_utf8()..];
@@ -130,7 +169,10 @@ fn row_is_all_faint(ansi_row: &str) -> bool {
             let mut params = String::new();
             let mut terminator = None;
             for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() || c == '@' || c == '~' {
+                if c.is_ascii_alphabetic()
+                    || c == '@'
+                    || c == '~'
+                {
                     terminator = Some(c);
                     break;
                 }
@@ -163,11 +205,13 @@ fn apply_sgr_params(raw: &str, faint: &mut bool) {
             "0" | "" => *faint = false,
             "2" => *faint = true,
             "22" => *faint = false,
-            "38" | "48" => match params.get(index + 1).copied() {
-                Some("5") => index += 2,
-                Some("2") => index += 4,
-                _ => {}
-            },
+            "38" | "48" => {
+                match params.get(index + 1).copied() {
+                    Some("5") => index += 2,
+                    Some("2") => index += 4,
+                    _ => {}
+                }
+            }
             _ => {}
         }
         index += 1;
@@ -178,7 +222,10 @@ fn apply_sgr_params(raw: &str, faint: &mut bool) {
 mod tests {
     use super::*;
 
-    fn claude_screen(plain_body: &str, ansi_body: &str) -> (String, String) {
+    fn claude_screen(
+        plain_body: &str,
+        ansi_body: &str,
+    ) -> (String, String) {
         let plain = format!(
             " ▐▛███▛█   Claude Code v2.1.283\n\n{}\n{}\n{}\n  status line",
             "─".repeat(40),
@@ -214,7 +261,9 @@ mod tests {
         );
         assert_eq!(
             classify_claude_prompt_box(&plain, &ansi),
-            PromptBoxState::Draft("已经 switch 了，复验吧".to_string())
+            PromptBoxState::Draft(
+                "已经 switch 了，复验吧".to_string()
+            )
         );
     }
 
@@ -226,12 +275,15 @@ mod tests {
         );
         assert_eq!(
             classify_claude_prompt_box(&plain, &ansi),
-            PromptBoxState::Draft("第一行草稿\n第二行草稿".to_string())
+            PromptBoxState::Draft(
+                "第一行草稿\n第二行草稿".to_string()
+            )
         );
     }
 
     #[test]
-    fn claude_true_color_background_is_not_mistaken_for_faint() {
+    fn claude_true_color_background_is_not_mistaken_for_faint(
+    ) {
         // A `48;2;r;g;b` truecolor background contains a literal "2" token that must not be
         // read as the SGR dim code on its own.
         let (plain, ansi) = claude_screen(
@@ -240,7 +292,9 @@ mod tests {
         );
         assert_eq!(
             classify_claude_prompt_box(&plain, &ansi),
-            PromptBoxState::Draft("已经 switch 了".to_string())
+            PromptBoxState::Draft(
+                "已经 switch 了".to_string()
+            )
         );
     }
 
@@ -256,16 +310,21 @@ mod tests {
 
     #[test]
     fn claude_mismatched_snapshots_are_unreadable() {
-        let (plain, ansi) = claude_screen("❯ 草稿", "❯\u{a0}草稿");
+        let (plain, ansi) =
+            claude_screen("❯ 草稿", "❯\u{a0}草稿");
         // Force a mismatch: one extra ANSI line the plain snapshot doesn't have.
-        let ansi = format!("{ansi}\nextra line only in ansi");
+        let ansi =
+            format!("{ansi}\nextra line only in ansi");
         assert_eq!(
             classify_claude_prompt_box(&plain, &ansi),
             PromptBoxState::Unreadable
         );
     }
 
-    fn codex_screen(plain_body: &str, ansi_body: &str) -> (String, String) {
+    fn codex_screen(
+        plain_body: &str,
+        ansi_body: &str,
+    ) -> (String, String) {
         let plain = format!(
             "╭──╮\n│ >_ OpenAI Codex │\n╰──╯\n\n{plain_body}\n\n  Ready · status"
         );
@@ -295,16 +354,23 @@ mod tests {
         );
         assert_eq!(
             classify_codex_prompt_box(&plain, &ansi),
-            PromptBoxState::Draft("钥匙串解锁了".to_string())
+            PromptBoxState::Draft(
+                "钥匙串解锁了".to_string()
+            )
         );
     }
 
     #[test]
     fn codex_multi_line_draft_is_detected_in_full() {
-        let (plain, ansi) = codex_screen("› 第一行\n  第二行", "› 第一行\n  第二行");
+        let (plain, ansi) = codex_screen(
+            "› 第一行\n  第二行",
+            "› 第一行\n  第二行",
+        );
         assert_eq!(
             classify_codex_prompt_box(&plain, &ansi),
-            PromptBoxState::Draft("第一行\n第二行".to_string())
+            PromptBoxState::Draft(
+                "第一行\n第二行".to_string()
+            )
         );
     }
 
