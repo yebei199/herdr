@@ -452,7 +452,10 @@ mod tests {
 
     #[test]
     fn guard_send_text_passes_through_when_target_unknown() {
-        assert_eq!(guard_send_text(None, "", "", "hello"), Some("hello".to_string()));
+        assert_eq!(
+            guard_send_text(None, "", "", "hello"),
+            Some("hello".to_string())
+        );
     }
 
     #[test]
@@ -466,10 +469,7 @@ mod tests {
 
     #[test]
     fn guard_send_text_includes_notice_for_claude_draft() {
-        let (plain, ansi) = claude_screen(
-            "❯ already switched",
-            "❯\u{a0}already switched",
-        );
+        let (plain, ansi) = claude_screen("❯ already switched", "❯\u{a0}already switched");
         assert_eq!(
             guard_send_text(Some(crate::detect::Agent::Claude), &plain, &ansi, "hello"),
             Some(text_with_draft_notice("hello"))
