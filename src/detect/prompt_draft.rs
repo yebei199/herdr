@@ -34,8 +34,6 @@ fn is_horizontal_rule(line: &str) -> bool {
 
 /// Claude Code: box between two `─` rules, `❯` marks the (possibly multi-line) prompt.
 pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> PromptBoxState {
-    return PromptBoxState::Unreadable; // TDD RED stub (#149); real body below the return.
-    #[allow(unreachable_code)]
     let plain_lines: Vec<&str> = plain_screen.lines().collect();
     let ansi_lines: Vec<&str> = ansi_screen.lines().collect();
     if plain_lines.len() != ansi_lines.len() {
@@ -61,8 +59,6 @@ pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> Prom
 
 /// Codex: no border. `›` marks the current prompt line; the block ends at the next blank row.
 pub fn classify_codex_prompt_box(plain_screen: &str, ansi_screen: &str) -> PromptBoxState {
-    return PromptBoxState::Unreadable; // TDD RED stub (#149); real body below the return.
-    #[allow(unreachable_code)]
     let plain_lines: Vec<&str> = plain_screen.lines().collect();
     let ansi_lines: Vec<&str> = ansi_screen.lines().collect();
     if plain_lines.len() != ansi_lines.len() {
