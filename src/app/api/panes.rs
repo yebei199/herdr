@@ -1825,7 +1825,34 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
+        // #149: same draft guard as `agent prompt` (see `queue_agent_prompt`). This primitive
+        // has no "submit" step of its own — it only types characters — but it is the other
+        // path #149's investigation named as able to merge into a pane's existing input, so it
+        // gets the same read-before-write check. Agent kinds with no locator, and panes with no
+        // detected agent at all, pass through unchanged.
+        let known_agent = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+            .and_then(|terminal| terminal.effective_known_agent());
+        let Some(text) = crate::detect::prompt_draft::guard_send_text(
+            known_agent,
+            &runtime.visible_text(),
+            &runtime.visible_ansi(),
+            &params.text,
+        ) else {
+            return encode_error(
+                id,
+                "prompt_box_unreadable",
+                format!(
+                    "cannot confirm pane {}'s input box state; refusing to send (not delivered)",
+                    params.pane_id
+                ),
+            );
+        };
+        if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
 
@@ -4553,5 +4580,55 @@ mod tests {
 
             assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
         }
+    }
+
+    #[test]
+    fn pane_send_text_refuses_without_writing_when_box_is_unreadable() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        // No horizontal-rule border anywhere: the Claude Code locator can't find a box at all.
+        let screen = b"Accessing workspace:\r\n/tmp\r\n".to_vec();
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, &screen, 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = app.handle_pane_send_text(
+            "req".into(),
+            PaneSendTextParams {
+                pane_id: public_pane_id,
+                text: "hello".into(),
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "prompt_box_unreadable");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn pane_send_text_sends_as_is_when_no_agent_is_detected() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = app.handle_pane_send_text(
+            "req".into(),
+            PaneSendTextParams {
+                pane_id: public_pane_id,
+                text: "hello".into(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::Ok {}));
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
     }
 }

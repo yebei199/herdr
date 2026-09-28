@@ -173,26 +173,24 @@ impl App {
             ));
         }
         // #149: refuse to merge a send into whatever the target's own input box already holds.
-        // Only agent kinds this module has a locator for are gated (see `SupportedAgent`); any
-        // other kind sends as before.
-        if let Some(supported) = supported_agent_for_draft_guard(expected_agent) {
-            let plain_screen = runtime.visible_text();
-            let ansi_screen = runtime.visible_ansi();
-            match crate::detect::prompt_draft::plan_send(&plain_screen, &ansi_screen, supported) {
-                crate::detect::prompt_draft::PromptDraftAction::Unreadable => {
-                    return Err(encode_error(
-                        id,
-                        "prompt_box_unreadable",
-                        format!(
-                            "cannot confirm agent {}'s input box state; refusing to send (not delivered)",
-                            params.target
-                        ),
-                    ));
-                }
-                crate::detect::prompt_draft::PromptDraftAction::IncludeDraftNotice => {
-                    params.text = crate::detect::prompt_draft::text_with_draft_notice(&params.text);
-                }
-                crate::detect::prompt_draft::PromptDraftAction::SendAsIs => {}
+        // Only agent kinds this module has a locator for are gated; any other kind sends as
+        // before (see `crate::detect::prompt_draft::SupportedAgent`).
+        match crate::detect::prompt_draft::guard_send_text(
+            Some(expected_agent),
+            &runtime.visible_text(),
+            &runtime.visible_ansi(),
+            &params.text,
+        ) {
+            Some(text) => params.text = text,
+            None => {
+                return Err(encode_error(
+                    id,
+                    "prompt_box_unreadable",
+                    format!(
+                        "cannot confirm agent {}'s input box state; refusing to send (not delivered)",
+                        params.target
+                    ),
+                ));
             }
         }
         #[cfg(windows)]
@@ -410,16 +408,6 @@ fn agent_not_found(id: String, target: &str) -> String {
         "agent_not_found",
         format!("agent target {target} not found"),
     )
-}
-
-fn supported_agent_for_draft_guard(
-    agent: crate::detect::Agent,
-) -> Option<crate::detect::prompt_draft::SupportedAgent> {
-    match agent {
-        crate::detect::Agent::Claude => Some(crate::detect::prompt_draft::SupportedAgent::Claude),
-        crate::detect::Agent::Codex => Some(crate::detect::prompt_draft::SupportedAgent::Codex),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

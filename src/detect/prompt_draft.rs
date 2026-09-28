@@ -209,7 +209,11 @@ pub const DRAFT_NOTICE_LINE: &str = "前面是用户未发出的草稿，原样�
 /// Classifies the target's prompt box and says what the caller should do next. This is the
 /// single entry point send paths should call; it never reads or writes anything itself, only
 /// judges the two snapshots the caller already has.
-pub fn plan_send(plain_screen: &str, ansi_screen: &str, agent: SupportedAgent) -> PromptDraftAction {
+pub fn plan_send(
+    plain_screen: &str,
+    ansi_screen: &str,
+    agent: SupportedAgent,
+) -> PromptDraftAction {
     let state = match agent {
         SupportedAgent::Claude => classify_claude_prompt_box(plain_screen, ansi_screen),
         SupportedAgent::Codex => classify_codex_prompt_box(plain_screen, ansi_screen),
@@ -225,6 +229,38 @@ pub fn plan_send(plain_screen: &str, ansi_screen: &str, agent: SupportedAgent) -
 /// [`PromptDraftAction::IncludeDraftNotice`].
 pub fn text_with_draft_notice(caller_text: &str) -> String {
     format!("\n{DRAFT_NOTICE_LINE}\n{caller_text}")
+}
+
+/// Maps a detected agent kind to the [`SupportedAgent`] this module has a locator for, or
+/// `None` for any kind the #149 investigation didn't cover (see [`SupportedAgent`]).
+pub fn supported_agent_for_draft_guard(agent: crate::detect::Agent) -> Option<SupportedAgent> {
+    match agent {
+        crate::detect::Agent::Claude => Some(SupportedAgent::Claude),
+        crate::detect::Agent::Codex => Some(SupportedAgent::Codex),
+        _ => None,
+    }
+}
+
+/// The single entry point every send path should call before writing `text` into a pane's
+/// input: `target_agent` is the terminal's currently known agent kind, if any, and
+/// `plain_screen`/`ansi_screen` are that terminal's current snapshots. Returns the text to
+/// actually submit, or `None` to refuse the send entirely (the box's state could not be
+/// confirmed). An agent kind with no locator — anything but Claude/Codex — always passes
+/// through unchanged, since this issue never verified a classifier for it.
+pub fn guard_send_text(
+    target_agent: Option<crate::detect::Agent>,
+    plain_screen: &str,
+    ansi_screen: &str,
+    text: &str,
+) -> Option<String> {
+    let Some(agent) = target_agent.and_then(supported_agent_for_draft_guard) else {
+        return Some(text.to_string());
+    };
+    match plan_send(plain_screen, ansi_screen, agent) {
+        PromptDraftAction::Unreadable => None,
+        PromptDraftAction::IncludeDraftNotice => Some(text_with_draft_notice(text)),
+        PromptDraftAction::SendAsIs => Some(text.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -261,7 +297,8 @@ mod tests {
 
     #[test]
     fn claude_real_single_line_draft_is_detected() {
-        let (plain, ansi) = claude_screen("❯ 已经 switch 了，复验吧", "❯\u{a0}已经 switch 了，复验吧");
+        let (plain, ansi) =
+            claude_screen("❯ 已经 switch 了，复验吧", "❯\u{a0}已经 switch 了，复验吧");
         assert_eq!(
             classify_claude_prompt_box(&plain, &ansi),
             PromptBoxState::Draft("已经 switch 了，复验吧".to_string())
@@ -401,6 +438,41 @@ mod tests {
         assert_eq!(
             text_with_draft_notice("原始消息"),
             "\n前面是用户未发出的草稿，原样一并提交\n原始消息"
+        );
+    }
+
+    #[test]
+    fn guard_send_text_passes_through_for_unsupported_agent_kind() {
+        let plain = "╭──╮\n│ >_ OpenAI Codex │\n╰──╯\n  Ready · status";
+        assert_eq!(
+            guard_send_text(Some(crate::detect::Agent::Pi), plain, plain, "hello"),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn guard_send_text_passes_through_when_target_unknown() {
+        assert_eq!(guard_send_text(None, "", "", "hello"), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn guard_send_text_refuses_when_unreadable() {
+        let plain = "╭──╮\n│ >_ OpenAI Codex │\n╰──╯\n  Ready · status";
+        assert_eq!(
+            guard_send_text(Some(crate::detect::Agent::Codex), plain, plain, "hello"),
+            None
+        );
+    }
+
+    #[test]
+    fn guard_send_text_includes_notice_for_claude_draft() {
+        let (plain, ansi) = claude_screen(
+            "❯ already switched",
+            "❯\u{a0}already switched",
+        );
+        assert_eq!(
+            guard_send_text(Some(crate::detect::Agent::Claude), &plain, &ansi, "hello"),
+            Some(text_with_draft_notice("hello"))
         );
     }
 }
