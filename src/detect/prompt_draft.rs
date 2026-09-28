@@ -15,11 +15,10 @@
 //! (`\x1b[2m`) attribute both TUIs wrap placeholder text in and never apply to real input —
 //! confirmed by hand for both Claude Code and Codex during the #149 investigation.
 //!
-//! Not wired to any send path yet: the default action for a detected draft (reject vs.
-//! include-with-notice) and the `--wait-empty`/`--allow-draft` options are still awaiting a
-//! user decision (#149). Remove the `allow(dead_code)` below in the increment that wires this
-//! into `queue_agent_prompt`/`pane send-text`.
-#![allow(dead_code)]
+//! Default action once a box is classified (user-approved, #149): empty/placeholder sends as
+//! usual; a real draft is sent together with the caller's own text, prefixed by
+//! [`DRAFT_NOTICE_LINE`], without touching the box; an unreadable box refuses to send. There is
+//! no wait or opt-in override — the caller either gets a plan or a refusal, immediately.
 
 /// What a prompt-box read found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +223,53 @@ fn apply_sgr_params(raw: &str, faint: &mut bool) {
     }
 }
 
+/// The agent kinds this module has a prompt-box locator for. Any other agent kind bypasses the
+/// guard entirely (see [`plan_send`]) — the #149 investigation only verified the two TUIs below,
+/// and refusing to send to every other agent kind for lack of a classifier would be a much
+/// larger, unreviewed behavior change than this issue asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportedAgent {
+    Claude,
+    Codex,
+}
+
+/// What the caller should do about the message it was about to send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptDraftAction {
+    /// The box was empty or only showed placeholder chrome; send the caller's text unchanged.
+    SendAsIs,
+    /// A real draft is present. Prepend [`DRAFT_NOTICE_LINE`] to the caller's own text and send
+    /// both together, without touching the box (no clearing, no rewriting).
+    IncludeDraftNotice,
+    /// The box's state could not be confirmed; the caller must refuse to send and report why.
+    Unreadable,
+}
+
+/// Prepended, on its own line, before the caller's text when a draft is detected (#149, user
+/// decision 2026-09-28: default is to submit the draft together with the message, not to wait
+/// or ask).
+pub const DRAFT_NOTICE_LINE: &str = "前面是用户未发出的草稿，原样一并提交";
+
+/// Classifies the target's prompt box and says what the caller should do next. This is the
+/// single entry point send paths should call; it never reads or writes anything itself, only
+/// judges the two snapshots the caller already has.
+pub fn plan_send(plain_screen: &str, ansi_screen: &str, agent: SupportedAgent) -> PromptDraftAction {
+    let state = match agent {
+        SupportedAgent::Claude => classify_claude_prompt_box(plain_screen, ansi_screen),
+        SupportedAgent::Codex => classify_codex_prompt_box(plain_screen, ansi_screen),
+    };
+    match state {
+        PromptBoxState::Unreadable => PromptDraftAction::Unreadable,
+        PromptBoxState::EmptyOrPlaceholder => PromptDraftAction::SendAsIs,
+        PromptBoxState::Draft(_) => PromptDraftAction::IncludeDraftNotice,
+    }
+}
+
+/// Builds the text to actually submit once [`plan_send`] returned [`PromptDraftAction::IncludeDraftNotice`].
+pub fn text_with_draft_notice(caller_text: &str) -> String {
+    format!("\n{DRAFT_NOTICE_LINE}\n{caller_text}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +432,47 @@ mod tests {
         assert_eq!(
             classify_codex_prompt_box(plain, plain),
             PromptBoxState::Unreadable
+        );
+    }
+
+    #[test]
+    fn plan_send_empty_box_sends_as_is() {
+        let (plain, ansi) = claude_screen(
+            "❯ Try \"fix lint errors\"",
+            "❯\u{a0}\u{1b}[0m\u{1b}[2mTry \"fix lint errors\"\u{1b}[0m",
+        );
+        assert_eq!(
+            plan_send(&plain, &ansi, SupportedAgent::Claude),
+            PromptDraftAction::SendAsIs
+        );
+    }
+
+    #[test]
+    fn plan_send_draft_includes_notice() {
+        let (plain, ansi) = codex_screen(
+            "› 钥匙串解锁了",
+            "\u{1b}[1m\u{1b}[48;2;57;57;71m›\u{1b}[0m\u{1b}[48;2;57;57;71m 钥匙串解锁了\u{1b}[0m",
+        );
+        assert_eq!(
+            plan_send(&plain, &ansi, SupportedAgent::Codex),
+            PromptDraftAction::IncludeDraftNotice
+        );
+    }
+
+    #[test]
+    fn plan_send_unreadable_box_refuses() {
+        let plain = "╭──╮\n│ >_ OpenAI Codex │\n╰──╯\n  Ready · status";
+        assert_eq!(
+            plan_send(plain, plain, SupportedAgent::Codex),
+            PromptDraftAction::Unreadable
+        );
+    }
+
+    #[test]
+    fn text_with_draft_notice_prepends_notice_line() {
+        assert_eq!(
+            text_with_draft_notice("原始消息"),
+            "\n前面是用户未发出的草稿，原样一并提交\n原始消息"
         );
     }
 }

@@ -111,7 +111,7 @@ impl App {
     fn queue_agent_prompt(
         &mut self,
         id: String,
-        params: AgentPromptParams,
+        mut params: AgentPromptParams,
     ) -> Result<
         (
             String,
@@ -171,6 +171,29 @@ impl App {
                     params.target
                 ),
             ));
+        }
+        // #149: refuse to merge a send into whatever the target's own input box already holds.
+        // Only agent kinds this module has a locator for are gated (see `SupportedAgent`); any
+        // other kind sends as before.
+        if let Some(supported) = supported_agent_for_draft_guard(expected_agent) {
+            let plain_screen = runtime.visible_text();
+            let ansi_screen = runtime.visible_ansi();
+            match crate::detect::prompt_draft::plan_send(&plain_screen, &ansi_screen, supported) {
+                crate::detect::prompt_draft::PromptDraftAction::Unreadable => {
+                    return Err(encode_error(
+                        id,
+                        "prompt_box_unreadable",
+                        format!(
+                            "cannot confirm agent {}'s input box state; refusing to send (not delivered)",
+                            params.target
+                        ),
+                    ));
+                }
+                crate::detect::prompt_draft::PromptDraftAction::IncludeDraftNotice => {
+                    params.text = crate::detect::prompt_draft::text_with_draft_notice(&params.text);
+                }
+                crate::detect::prompt_draft::PromptDraftAction::SendAsIs => {}
+            }
         }
         #[cfg(windows)]
         let submit_deadline = params
@@ -387,6 +410,16 @@ fn agent_not_found(id: String, target: &str) -> String {
         "agent_not_found",
         format!("agent target {target} not found"),
     )
+}
+
+fn supported_agent_for_draft_guard(
+    agent: crate::detect::Agent,
+) -> Option<crate::detect::prompt_draft::SupportedAgent> {
+    match agent {
+        crate::detect::Agent::Claude => Some(crate::detect::prompt_draft::SupportedAgent::Claude),
+        crate::detect::Agent::Codex => Some(crate::detect::prompt_draft::SupportedAgent::Codex),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -819,5 +852,148 @@ mod tests {
                 Some("shell-pane")
             );
         }
+    }
+
+    fn claude_screen_bytes(box_body: &str) -> Vec<u8> {
+        let border = "─".repeat(40);
+        format!("{border}\r\n{box_body}\r\n{border}\r\n").into_bytes()
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_sends_as_is_when_box_is_placeholder() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let screen = claude_screen_bytes("❯ \x1b[2mTry \"fix lint errors\"\x1b[0m");
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, &screen, 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                wait: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_includes_draft_notice_when_box_has_draft() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let screen = claude_screen_bytes("❯ already switched, please re-verify");
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, &screen, 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                wait: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        let expected = crate::detect::prompt_draft::text_with_draft_notice("hello");
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from(expected));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_refuses_without_writing_when_box_is_unreadable() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        // No horizontal-rule border anywhere: the Claude Code prompt-box locator can't find a
+        // box at all, so the guard must refuse rather than guess it's empty.
+        let screen = b"Accessing workspace:\r\n/tmp\r\n".to_vec();
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, &screen, 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                wait: None,
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "prompt_box_unreadable");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_bypasses_draft_guard_for_unsupported_agent_kind() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        // The same unreadable-for-Claude screen as above; an agent kind with no locator must
+        // send normally rather than inherit a Claude-specific refusal.
+        let screen = b"Accessing workspace:\r\n/tmp\r\n".to_vec();
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, &screen, 8,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                wait: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
     }
 }
