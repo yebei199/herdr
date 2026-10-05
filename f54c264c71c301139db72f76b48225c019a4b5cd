@@ -1,0 +1,10 @@
+result=red
+commit=f54c264c71c301139db72f76b48225c019a4b5cd
+date=2026-10-06T03:02:57+08:00
+host=pc3
+plan_id=sha256:d940d782c5cc7a71c5f31060af3fe0c51d81e7cfea76db2df71e0b3e690ba3b7
+failed=nightly.rust-coverage
+log=pc1:/home/yb/.local/state/nightly/runs/20261006T030012.352293975/yebei199__herdr/log
+range=
+notified=
+issue=5
