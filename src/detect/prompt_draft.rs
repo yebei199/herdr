@@ -391,6 +391,41 @@ mod tests {
         );
     }
 
+    // #317: for its first ~14 seconds Codex 0.160 draws an animated field of braille dots
+    // (U+2800 block, coloured, not faint) over the rows around the prompt. Both fixtures are
+    // real `herdr pane read --source visible` captures of a freshly started Codex.
+    #[test]
+    fn codex_startup_particles_glued_to_marker_are_not_unreadable() {
+        let plain = include_str!("../../tests/fixtures/codex-startup-particles/glued.txt");
+        let ansi = include_str!("../../tests/fixtures/codex-startup-particles/glued.ansi");
+        assert_eq!(
+            classify_codex_prompt_box(plain, ansi),
+            PromptBoxState::EmptyOrPlaceholder
+        );
+    }
+
+    #[test]
+    fn codex_startup_particles_are_not_a_draft() {
+        let plain = include_str!("../../tests/fixtures/codex-startup-particles/detached.txt");
+        let ansi = include_str!("../../tests/fixtures/codex-startup-particles/detached.ansi");
+        assert_eq!(
+            classify_codex_prompt_box(plain, ansi),
+            PromptBoxState::EmptyOrPlaceholder
+        );
+    }
+
+    #[test]
+    fn codex_real_draft_under_startup_particles_is_still_detected() {
+        let (plain, ansi) = codex_screen(
+            "›⠁钥匙串解锁了 ⠈\n  ⢀   ⠠",
+            "\u{1b}[1m›\u{1b}[0m\u{1b}[38;2;63;63;78m⠁\u{1b}[0m钥匙串解锁了 \u{1b}[38;2;63;63;78m⠈\u{1b}[0m\n  \u{1b}[38;2;63;63;78m⢀   ⠠\u{1b}[0m",
+        );
+        assert_eq!(
+            classify_codex_prompt_box(&plain, &ansi),
+            PromptBoxState::Draft("钥匙串解锁了".to_string())
+        );
+    }
+
     #[test]
     fn codex_no_marker_found_is_unreadable() {
         let plain = "╭──╮\n│ >_ OpenAI Codex │\n╰──╯\n  Ready · status";
