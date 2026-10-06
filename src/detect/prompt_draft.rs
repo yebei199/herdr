@@ -62,8 +62,24 @@ pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> Prom
     classify_body(&plain_lines[marker..end], &ansi_lines[marker..end], '❯')
 }
 
+/// Blanks out the braille dots (U+2800..=U+28FF) Codex animates over the rows around its prompt
+/// for its first ~14 seconds (#317). They are coloured, not faint, so left in place they either
+/// split the `› ` marker or read as a user draft. Escape sequences never contain these chars, so
+/// the same replacement keeps the plain and ANSI snapshots aligned.
+///
+/// ponytail: a draft the user typed in braille is blanked too and classified as empty; detect the
+/// animation by its colour instead if that ever matters.
+fn without_startup_particles(screen: &str) -> String {
+    screen
+        .chars()
+        .map(|ch| if ('\u{2800}'..='\u{28ff}').contains(&ch) { ' ' } else { ch })
+        .collect()
+}
+
 /// Codex: no border. `›` marks the current prompt line; the block ends at the next blank row.
 pub fn classify_codex_prompt_box(plain_screen: &str, ansi_screen: &str) -> PromptBoxState {
+    let plain_screen = without_startup_particles(plain_screen);
+    let ansi_screen = without_startup_particles(ansi_screen);
     let plain_lines: Vec<&str> = plain_screen.lines().collect();
     let ansi_lines: Vec<&str> = ansi_screen.lines().collect();
     if plain_lines.len() != ansi_lines.len() {
