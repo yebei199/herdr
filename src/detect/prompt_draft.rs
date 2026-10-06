@@ -72,7 +72,13 @@ pub fn classify_claude_prompt_box(plain_screen: &str, ansi_screen: &str) -> Prom
 fn without_startup_particles(screen: &str) -> String {
     screen
         .chars()
-        .map(|ch| if ('\u{2800}'..='\u{28ff}').contains(&ch) { ' ' } else { ch })
+        .map(|ch| {
+            if ('\u{2800}'..='\u{28ff}').contains(&ch) {
+                ' '
+            } else {
+                ch
+            }
+        })
         .collect()
 }
 
