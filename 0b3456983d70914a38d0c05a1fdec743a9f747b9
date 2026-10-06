@@ -1,0 +1,10 @@
+result=green
+commit=0b3456983d70914a38d0c05a1fdec743a9f747b9
+date=2026-10-07T03:12:12+08:00
+host=pc2
+plan_id=sha256:213a66feb099436a942897e63b5569e27de1ad42b20476820a47d39875c0b29d
+failed=
+log=pc1:/home/yb/.local/state/nightly/runs/20261007T030009.398490277/yebei199__herdr/log
+range=
+notified=
+issue=
