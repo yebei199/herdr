@@ -630,6 +630,9 @@ impl ClientShellState {
             return None;
         }
         if let Some(target) = self.popup_input_target() {
+            if self.route_float_toggle(key, outcome) {
+                return None;
+            }
             return Some(target);
         }
         if self.popup_pending {
@@ -1163,6 +1166,28 @@ impl ClientShellState {
             // Shifted punctuation ("?") released after Shift: the report names
             // only the unshifted key ("/"), which depends on the layout.
             .or_else(|| self.input_leases.remove_sole_text_press(LOCAL_INPUT_SOURCE))
+    }
+
+    /// Float keys are the one input a popup does not own: the program inside must not be
+    /// able to swallow the way out. Only direct chords qualify, the prefix belongs to the popup.
+    fn route_float_toggle(
+        &mut self,
+        key: &crate::input::TerminalKey,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if key.kind != KeyEventKind::Press {
+            return false;
+        }
+        let Some(command) = crate::input::resolve_custom_command(
+            &self.config.keybinds.keybinds,
+            key,
+            crate::input::KeybindDispatch::Direct,
+        )
+        .filter(|command| command.action == crate::config::CustomCommandAction::Float) else {
+            return false;
+        };
+        self.record_binding(crate::input::KeybindMatch::Command(command), outcome);
+        true
     }
 
     fn popup_input_target(&self) -> Option<ClientInputTarget> {

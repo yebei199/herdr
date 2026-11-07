@@ -248,7 +248,11 @@ impl ClientShellState {
                     pane_id: snapshot.focused_pane_id.clone(),
                     selection,
                 };
-                if action == crate::protocol::ClientShellCommandAction::Popup {
+                // A float key pressed while a popup is up hides it, so no popup will arrive.
+                let opens_popup = action == crate::protocol::ClientShellCommandAction::Popup
+                    || (action == crate::protocol::ClientShellCommandAction::Float
+                        && self.popup_terminal_id.is_none());
+                if opens_popup {
                     self.popup_pending = true;
                     self.popup_pending_deadline = None;
                     if !self.push_endpoint_method_with_kind(

@@ -253,6 +253,9 @@ impl ClientShellConfig {
                             crate::protocol::ClientShellCommandAction::Popup => {
                                 crate::config::CommandKeybindType::Popup
                             }
+                            crate::protocol::ClientShellCommandAction::Float => {
+                                crate::config::CommandKeybindType::Float
+                            }
                             crate::protocol::ClientShellCommandAction::PluginAction => {
                                 crate::config::CommandKeybindType::PluginAction
                             }

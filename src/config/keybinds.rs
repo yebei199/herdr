@@ -115,6 +115,7 @@ pub enum CommandKeybindType {
     Shell,
     Pane,
     Popup,
+    Float,
     PluginAction,
 }
 
@@ -130,9 +131,9 @@ pub struct CommandKeybindConfig {
     pub action_type: CommandKeybindType,
     /// Optional user-defined description for this custom command.
     pub description: Option<String>,
-    /// Optional popup width as cells or a percentage string when type = "popup".
+    /// Optional popup width as cells or a percentage string when type = "popup" or "float".
     pub width: Option<PopupSize>,
-    /// Optional popup height as cells or a percentage string when type = "popup".
+    /// Optional popup height as cells or a percentage string when type = "popup" or "float".
     pub height: Option<PopupSize>,
 }
 
@@ -154,6 +155,8 @@ pub enum CustomCommandAction {
     Shell,
     Pane,
     Popup,
+    /// Workspace-bound popup whose key hides it without ending the command.
+    Float,
     PluginAction,
 }
 
@@ -830,9 +833,13 @@ fn append_custom_command_bindings(
             CommandKeybindType::Shell => CustomCommandAction::Shell,
             CommandKeybindType::Pane => CustomCommandAction::Pane,
             CommandKeybindType::Popup => CustomCommandAction::Popup,
+            CommandKeybindType::Float => CustomCommandAction::Float,
             CommandKeybindType::PluginAction => CustomCommandAction::PluginAction,
         };
-        let (width, height) = if action == CustomCommandAction::Popup {
+        let (width, height) = if matches!(
+            action,
+            CustomCommandAction::Popup | CustomCommandAction::Float
+        ) {
             (command.width, command.height)
         } else {
             if command.width.is_some() || command.height.is_some() {
@@ -2522,6 +2529,30 @@ description = "say hello"
         assert_eq!(
             keybinds.custom_commands[0].description,
             Some("say hello".to_string())
+        );
+    }
+
+    #[test]
+    fn custom_float_command_keeps_popup_size() {
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "alt+t"
+command = "fish"
+type = "float"
+width = "80%"
+height = "80%"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert_eq!(
+            keybinds.custom_commands[0].action,
+            CustomCommandAction::Float
+        );
+        assert_eq!(
+            keybinds.custom_commands[0].width,
+            Some(PopupSize::Percent(80))
         );
     }
 

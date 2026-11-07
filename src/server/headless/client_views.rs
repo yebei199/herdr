@@ -134,7 +134,9 @@ impl HeadlessServer {
             .is_some_and(|tab_id| self.app.parse_tab_id(tab_id).is_none())
         {
             self.popup_owner_tab_id = None;
-            self.app.close_popup_pane();
+            if !self.app.hide_visible_float() {
+                self.app.close_popup_pane();
+            }
         } else if self.popup_owner_tab_id.is_none() {
             self.popup_owner_tab_id = self
                 .default_shell_target()
@@ -920,14 +922,20 @@ impl HeadlessServer {
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
         self.set_default_shell_target_from_client(client_id);
-        let popup_before = self.app.state.popup_pane.is_some();
+        let popup_terminal = |server: &Self| {
+            let popup = server.app.state.popup_pane.as_ref();
+            popup.map(|popup| popup.terminal_id.clone())
+        };
+        let popup_before = popup_terminal(self);
         let popup_owner = self.shell_tab_id_for_client(client_id);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
         self.focus_shell_client_on_default_target(client_id);
-        if !popup_before && self.app.state.popup_pane.is_some() {
+        let popup_after = popup_terminal(self);
+        // Comparing terminals, not presence: one float can replace another in a single request.
+        if popup_after.is_some() && popup_after != popup_before {
             self.popup_owner_tab_id = popup_owner;
         }
-        if reconcile || self.app.state.popup_pane.is_some() != popup_before {
+        if reconcile || popup_after != popup_before {
             self.reconcile_client_shell_locations();
         }
         let focus_after = self.shell_focus_target(client_id);

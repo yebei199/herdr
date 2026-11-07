@@ -631,6 +631,74 @@ fn popup_command_blocks_underlying_input_until_surface_or_error() {
     assert!(!state.popup_pending);
 }
 
+fn state_with_float_key() -> ClientShellState {
+    let config: Config = toml::from_str(
+        r#"
+[[keys.command]]
+key = "alt+t"
+command = "fish"
+type = "float"
+"#,
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projection = snapshot();
+    projection
+        .commands
+        .push(crate::protocol::ClientShellCommand {
+            command_id: "cmd_float".into(),
+            binding_label: "alt+t".into(),
+            binding_labels: vec!["alt+t".into()],
+            action: crate::protocol::ClientShellCommandAction::Float,
+            description: None,
+        });
+    state.set_snapshot(Box::new(projection));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn float_key_reaches_herdr_while_a_program_owns_the_popup() {
+    let mut state = state_with_float_key();
+    state.popup_terminal_id = Some("float-terminal".into());
+
+    let outcome = state.handle_input_bytes(b"\x1bt");
+
+    assert!(outcome.requests.is_empty(), "popup must not see the key");
+    assert!(matches!(
+        &outcome.actions[..],
+        [ClientShellAction::Endpoint { .. }]
+    ));
+    assert!(!state.popup_pending, "hiding delivers no popup to wait for");
+}
+
+#[test]
+fn other_keys_still_belong_to_the_popup() {
+    let mut state = state_with_float_key();
+    state.popup_terminal_id = Some("float-terminal".into());
+
+    let outcome = state.handle_input_bytes(b"x");
+
+    assert!(matches!(
+        &outcome.requests[..],
+        [ClientMessage::ClientShellPopupInput { .. }]
+    ));
+    assert!(outcome.actions.is_empty());
+}
+
+#[test]
+fn float_key_waits_for_the_popup_when_opening() {
+    let mut state = state_with_float_key();
+
+    let outcome = state.handle_input_bytes(b"\x1bt");
+
+    assert!(matches!(
+        &outcome.actions[..],
+        [ClientShellAction::Endpoint { .. }]
+    ));
+    assert!(state.popup_pending);
+}
+
 #[test]
 fn shell_refuses_mismatched_projection_and_clears_stale_hits_in_either_order() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

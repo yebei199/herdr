@@ -568,6 +568,7 @@ impl App {
             ),
             plugin_panes: std::collections::HashMap::new(),
             popup_pane: None,
+            hidden_floats: std::collections::HashMap::new(),
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,

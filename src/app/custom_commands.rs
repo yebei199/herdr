@@ -220,6 +220,7 @@ impl App {
                 self.spawn_pane_command(&binding.command, Vec::new())
             }
             crate::config::CustomCommandAction::Popup => self.spawn_custom_popup_command(binding),
+            crate::config::CustomCommandAction::Float => self.toggle_float(binding),
             crate::config::CustomCommandAction::PluginAction => self
                 .invoke_plugin_action_from_keybind(binding.command.clone(), selected_text)
                 .map_err(io::Error::other),

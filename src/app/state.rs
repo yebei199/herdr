@@ -14,12 +14,21 @@ pub(crate) struct PluginPaneRecord {
     pub entrypoint: String,
 }
 
+/// Identifies a float: one per command per workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FloatKey {
+    pub workspace_id: String,
+    pub command: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PopupPaneState {
     pub pane_id: PaneId,
     pub terminal_id: crate::terminal::TerminalId,
     pub width: Option<crate::popup_size::PopupSize>,
     pub height: Option<crate::popup_size::PopupSize>,
+    /// Set when this popup is a float, which hides instead of closing.
+    pub float: Option<FloatKey>,
 }
 
 use crate::terminal_theme::{HostAppearance, TerminalTheme};
@@ -875,6 +884,8 @@ pub struct AppState {
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
     /// Session-modal terminal popup. This is intentionally outside workspace layouts.
     pub(crate) popup_pane: Option<PopupPaneState>,
+    /// Floats whose command keeps running while they are off screen.
+    pub(crate) hidden_floats: std::collections::HashMap<FloatKey, PopupPaneState>,
     /// Recent plugin action/event command executions.
     pub(crate) plugin_command_logs: Vec<crate::api::schema::PluginCommandLogInfo>,
     pub(crate) next_plugin_command_log_id: u64,
@@ -1113,6 +1124,7 @@ impl AppState {
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
             popup_pane: None,
+            hidden_floats: std::collections::HashMap::new(),
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
@@ -1298,6 +1310,24 @@ impl AppState {
                 !attached_terminal_ids.contains(&popup.terminal_id),
                 "popup terminal {} must not be attached to a tiled pane",
                 popup.terminal_id
+            );
+        }
+        for (key, float) in &self.hidden_floats {
+            assert_eq!(
+                float.float.as_ref(),
+                Some(key),
+                "hidden float map key must match payload"
+            );
+            assert!(
+                self.terminals.contains_key(&float.terminal_id),
+                "hidden float {:?} references missing terminal {}",
+                float.pane_id,
+                float.terminal_id
+            );
+            assert!(
+                !attached_terminal_ids.contains(&float.terminal_id),
+                "hidden float terminal {} must not be attached to a tiled pane",
+                float.terminal_id
             );
         }
         for &pane_id in self.plugin_panes.keys() {
