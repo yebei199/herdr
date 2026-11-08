@@ -1,3 +1,4 @@
+use super::agent_sidebar::AgentListItem;
 use super::render::put_text;
 use super::*;
 
@@ -61,18 +62,16 @@ pub(super) fn render_expanded(
     ) {
         return;
     }
-    let rows = agent_rows(endpoints, active_endpoint_id, config);
+    let items = agent_items(endpoints, active_endpoint_id, config);
     super::agent_sidebar::render_agent_list(
         buffer,
         area,
-        &rows,
+        &items,
         agent_view_label.map(|_| " no matching agents"),
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -92,32 +91,21 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         pane_id: &str,
-        body_height: u16,
+        body: Rect,
     ) {
-        if body_height == 0 {
-            return;
-        }
-        let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);
-        let Some(target) = rows
-            .iter()
-            .position(|row| &row.endpoint_id == endpoint_id && row.agent.pane_id == pane_id)
-        else {
+        let items = agent_items(&self.endpoints, &self.active_endpoint_id, &self.config);
+        let Some(target) = items.iter().position(|item| {
+            matches!(item, AgentListItem::Agent(row)
+                if &row.endpoint_id == endpoint_id && row.agent.pane_id == pane_id)
+        }) else {
             return;
         };
-        let heights = rows
-            .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
-            .collect::<Vec<_>>();
-        let mut gaps = vec![self.config.agents.row_gap; rows.len()];
-        if let Some(last) = gaps.last_mut() {
-            *last = 0;
-        }
-        self.agent_scroll = super::scroll::list_scroll_start_to_reveal(
-            &heights,
-            &gaps,
-            body_height,
-            self.agent_scroll,
+        self.agent_scroll = super::agent_sidebar::agent_scroll_to_reveal(
+            &items,
             target,
+            body,
+            self.agent_scroll,
+            &self.config,
         );
     }
 }
@@ -127,6 +115,29 @@ struct EndpointAgentRow {
     machine_label: String,
     stale: bool,
     agent: super::agent_sidebar::AgentRow,
+}
+
+impl super::agent_sidebar::AgentListRow for EndpointAgentRow {
+    fn agent(&self) -> &super::agent_sidebar::AgentRow {
+        &self.agent
+    }
+}
+
+fn agent_items(
+    endpoints: &[ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    config: &ClientShellConfig,
+) -> Vec<AgentListItem<EndpointAgentRow>> {
+    super::agent_sidebar::agent_list_items(
+        agent_rows(endpoints, active_endpoint_id, config),
+        config,
+        |row| super::agent_sidebar::AgentGroup {
+            label: format!("{} · {}", row.machine_label, row.agent.workspace_label),
+            endpoint_id: Some(row.endpoint_id.clone()),
+            workspace_id: row.agent.workspace_id.clone(),
+            focused: row.agent.workspace_focused && &row.endpoint_id == active_endpoint_id,
+        },
+    )
 }
 
 fn agent_rows(

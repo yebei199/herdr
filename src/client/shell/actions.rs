@@ -930,7 +930,19 @@ impl ClientShellState {
                     .iter()
                     .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
                 {
-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
+                    let items = super::agent_sidebar::local_agent_items(snapshot, &self.config);
+                    if let Some(target) = items.iter().position(|item| {
+                        matches!(item, super::agent_sidebar::AgentListItem::Agent(row)
+                            if row.pane_id == pane_id)
+                    }) {
+                        self.agent_scroll = super::agent_sidebar::agent_scroll_to_reveal(
+                            &items,
+                            target,
+                            self.hits.agent_body,
+                            self.agent_scroll,
+                            &self.config,
+                        );
+                    }
                 }
                 Some(Method::PaneFocus(PaneTarget { pane_id }))
             }

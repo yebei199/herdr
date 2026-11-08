@@ -2159,6 +2159,9 @@ impl ClientShellState {
                     );
                     return;
                 }
+                if self.handle_agent_group_click(point, outcome) {
+                    return;
+                }
                 let scrollbar_hit = self
                     .hits
                     .panes

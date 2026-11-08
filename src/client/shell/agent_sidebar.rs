@@ -4,17 +4,100 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
 use super::*;
 
+/// Lines one token row may wrap onto before the rest is elided.
+const AGENT_ROW_MAX_LINES: usize = 2;
+
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
+    pub(super) workspace_id: String,
+    pub(super) workspace_label: String,
+    pub(super) workspace_focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+}
+
+/// Rows the agent list can show; implemented by local and endpoint-qualified agent rows.
+pub(super) trait AgentListRow {
+    fn agent(&self) -> &AgentRow;
+}
+
+impl AgentListRow for AgentRow {
+    fn agent(&self) -> &AgentRow {
+        self
+    }
+}
+
+pub(super) enum AgentListItem<T> {
+    Group(AgentGroup),
+    Agent(T),
+}
+
+/// Workspace heading above that workspace's agents in the grouped (`spaces`) panel.
+pub(super) struct AgentGroup {
+    pub(super) label: String,
+    pub(super) endpoint_id: Option<ClientEndpointId>,
+    pub(super) workspace_id: String,
+    pub(super) focused: bool,
+}
+
+pub(super) struct AgentGroupHit {
+    pub(super) rect: Rect,
+    pub(super) endpoint_id: Option<ClientEndpointId>,
+    pub(super) workspace_id: String,
+}
+
+fn agents_grouped(config: &ClientShellConfig) -> bool {
+    config.agent_panel_sort == crate::config::AgentPanelSortConfig::Spaces
+}
+
+/// Inserts a workspace heading before each run of agents sharing one, when the panel is grouped.
+pub(super) fn agent_list_items<T>(
+    rows: Vec<T>,
+    config: &ClientShellConfig,
+    group_of: impl Fn(&T) -> AgentGroup,
+) -> Vec<AgentListItem<T>> {
+    if !agents_grouped(config) {
+        return rows.into_iter().map(AgentListItem::Agent).collect();
+    }
+    let mut items = Vec::with_capacity(rows.len());
+    let mut current: Option<(Option<ClientEndpointId>, String)> = None;
+    for row in rows {
+        let group = group_of(&row);
+        let key = (group.endpoint_id.clone(), group.workspace_id.clone());
+        if current.as_ref() != Some(&key) {
+            items.push(AgentListItem::Group(group));
+            current = Some(key);
+        }
+        items.push(AgentListItem::Agent(row));
+    }
+    items
+}
+
+fn local_agent_group(row: &AgentRow) -> AgentGroup {
+    AgentGroup {
+        label: row.workspace_label.clone(),
+        endpoint_id: None,
+        workspace_id: row.workspace_id.clone(),
+        focused: row.workspace_focused,
+    }
+}
+
+pub(super) fn local_agent_items(
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+) -> Vec<AgentListItem<AgentRow>> {
+    agent_list_items(
+        agent_rows(snapshot, config, None),
+        config,
+        local_agent_group,
+    )
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -67,11 +150,11 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let items = local_agent_items(snapshot, config);
     render_agent_list(
         buffer,
         area,
-        &rows,
+        &items,
         snapshot
             .agent_view_label
             .as_ref()
@@ -79,11 +162,7 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
-        |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
-        },
+        |_, rect, row, hits| hits.agents.push((rect, row.pane_id.clone())),
     );
 }
 
@@ -151,16 +230,102 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
-pub(super) fn render_agent_list<T>(
+/// Agent list measured at one width: every item's lines, the gaps after them and the
+/// scroll metrics they produce. Rendering and reveal both read heights from here.
+struct AgentListLayout {
+    lines: Vec<Vec<Line<'static>>>,
+    heights: Vec<u16>,
+    gaps: Vec<u16>,
+    metrics: crate::pane::ScrollMetrics,
+    content_width: u16,
+}
+
+fn layout_agent_list<T: AgentListRow>(
+    items: &[AgentListItem<T>],
+    body: Rect,
+    requested_start: usize,
+    config: &ClientShellConfig,
+) -> AgentListLayout {
+    let gaps = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            AgentListItem::Agent(_) if index + 1 < items.len() => config.agents.row_gap,
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let measure = |width: u16| {
+        let lines = items
+            .iter()
+            .map(|item| match item {
+                AgentListItem::Group(group) => vec![agent_group_line(group, width, config)],
+                AgentListItem::Agent(row) => agent_lines(row.agent(), width, config),
+            })
+            .collect::<Vec<_>>();
+        let heights = lines
+            .iter()
+            .map(|lines| lines.len().clamp(1, u16::MAX as usize) as u16)
+            .collect::<Vec<_>>();
+        let metrics =
+            super::scroll::list_scroll_metrics(&heights, &gaps, body.height, requested_start);
+        (lines, heights, metrics)
+    };
+    let (mut lines, mut heights, mut metrics) = measure(body.width);
+    let mut content_width = body.width;
+    // The scrollbar takes a column, which can only add wrapped lines, so it stays needed.
+    if metrics.max_offset_from_bottom > 0 && body.width > 1 {
+        content_width = body.width - 1;
+        (lines, heights, metrics) = measure(content_width);
+    }
+    AgentListLayout {
+        lines,
+        heights,
+        gaps,
+        metrics,
+        content_width,
+    }
+}
+
+/// Scroll start that keeps item `target` visible, pulling in its workspace heading when the
+/// agent is the first of its group and both fit.
+pub(super) fn agent_scroll_to_reveal<T: AgentListRow>(
+    items: &[AgentListItem<T>],
+    target: usize,
+    body: Rect,
+    scroll: usize,
+    config: &ClientShellConfig,
+) -> usize {
+    if body.is_empty() || target >= items.len() {
+        return scroll;
+    }
+    let layout = layout_agent_list(items, body, scroll, config);
+    let start = super::scroll::list_scroll_start_to_reveal(
+        &layout.heights,
+        &layout.gaps,
+        body.height,
+        scroll,
+        target,
+    );
+    let heading = target.checked_sub(1).filter(|heading| {
+        matches!(items[*heading], AgentListItem::Group(_))
+            && layout.heights[*heading] + layout.gaps[*heading] + layout.heights[target]
+                <= body.height
+    });
+    match heading {
+        Some(heading) if start == target => heading,
+        _ => start,
+    }
+}
+
+pub(super) fn render_agent_list<T: AgentListRow>(
     buffer: &mut Buffer,
     area: Rect,
-    rows: &[T],
+    items: &[AgentListItem<T>],
     empty_message: Option<&str>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
-    row_lines: impl Fn(&T) -> usize,
-    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+    mut on_agent: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
     let body = Rect::new(
         area.x,
@@ -169,7 +334,7 @@ pub(super) fn render_agent_list<T>(
         area.height.saturating_sub(3),
     );
     hits.agent_body = body;
-    if body.is_empty() || rows.is_empty() {
+    if body.is_empty() || items.is_empty() {
         *agent_scroll = 0;
         if let Some(message) = empty_message.filter(|_| !body.is_empty()) {
             put_text(
@@ -186,52 +351,73 @@ pub(super) fn render_agent_list<T>(
         return;
     }
 
-    let row_heights = rows
-        .iter()
-        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
-        .collect::<Vec<_>>();
-    let gaps = rows
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            }
-        })
-        .collect::<Vec<_>>();
-    let metrics =
-        super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *agent_scroll);
+    let layout = layout_agent_list(items, body, *agent_scroll, config);
+    let metrics = layout.metrics;
     hits.agent_max_scroll = metrics.max_offset_from_bottom;
     hits.agent_scroll_metrics = Some(metrics);
     *agent_scroll = metrics
         .max_offset_from_bottom
         .saturating_sub(metrics.offset_from_bottom);
-    let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let mut y = body.y;
-    for (index, row) in rows.iter().enumerate().skip(*agent_scroll) {
-        let height = row_heights[index].min(body.height);
+    for (index, item) in items.iter().enumerate().skip(*agent_scroll) {
+        let height = layout.heights[index].min(body.height);
         if y.saturating_add(height) > body.bottom() {
             break;
         }
-        let rect = Rect::new(body.x, y, content_width, height);
-        render_row(buffer, rect, row, hits);
-        y = y
-            .saturating_add(height)
-            .saturating_add(if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            });
+        let rect = Rect::new(body.x, y, layout.content_width, height);
+        match item {
+            AgentListItem::Group(group) => {
+                paint_lines(buffer, rect, &layout.lines[index], Style::default());
+                hits.agent_groups.push(AgentGroupHit {
+                    rect,
+                    endpoint_id: group.endpoint_id.clone(),
+                    workspace_id: group.workspace_id.clone(),
+                });
+            }
+            AgentListItem::Agent(row) => {
+                let style = if row.agent().focused {
+                    Style::default().bg(config.palette.active_row_bg)
+                } else {
+                    Style::default()
+                };
+                paint_lines(buffer, rect, &layout.lines[index], style);
+                on_agent(buffer, rect, row, hits);
+            }
+        }
+        y = y.saturating_add(height).saturating_add(layout.gaps[index]);
     }
 
-    if show_scrollbar {
+    if layout.content_width < body.width {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.agent_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, &config.palette);
     }
+}
+
+fn paint_lines(buffer: &mut Buffer, rect: Rect, lines: &[Line<'static>], style: Style) {
+    for (offset, line) in lines.iter().take(rect.height as usize).enumerate() {
+        Paragraph::new(line.clone()).style(style).render(
+            Rect::new(rect.x, rect.y + offset as u16, rect.width, 1),
+            buffer,
+        );
+    }
+}
+
+fn agent_group_line(group: &AgentGroup, width: u16, config: &ClientShellConfig) -> Line<'static> {
+    let style = Style::default()
+        .fg(if group.focused {
+            config.palette.text
+        } else {
+            config.palette.subtext0
+        })
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            crate::ui::truncate_end(&group.label, width.saturating_sub(1) as usize),
+            style,
+        ),
+    ])
 }
 
 pub(super) fn agent_rows(
@@ -314,63 +500,78 @@ pub(super) fn agent_row(
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
+        workspace_id: workspace.workspace_id.clone(),
+        workspace_label: workspace.label.clone(),
+        workspace_focused: snapshot.focused_workspace_id.as_deref()
+            == Some(workspace.workspace_id.as_str()),
         rows,
     })
 }
 
-pub(super) fn render_agent_row(
-    buffer: &mut Buffer,
-    rect: Rect,
-    row: &AgentRow,
-    config: &ClientShellConfig,
-) {
+/// The agent's token rows laid out at `width`: text rows wrap onto at most
+/// `AGENT_ROW_MAX_LINES` lines, and grouped agents sit one level under their heading.
+fn agent_lines(row: &AgentRow, width: u16, config: &ClientShellConfig) -> Vec<Line<'static>> {
     let palette = &config.palette;
-    let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
-    };
-    let name_style = if row.focused {
-        Style::default()
-            .fg(palette.text)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(palette.subtext0)
-            .add_modifier(Modifier::BOLD)
-    };
+    let name_style = Style::default()
+        .fg(if row.focused {
+            palette.text
+        } else {
+            palette.subtext0
+        })
+        .add_modifier(Modifier::BOLD);
     let status_style = Style::default().fg(status_color(row.status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
         status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
+        status_style,
     );
+    let fallback = [vec![crate::ui::ResolvedToken {
+        kind: crate::ui::ResolvedTokenKind::StateIcon,
+        style: Default::default(),
+    }]];
     let rows = if row.rows.is_empty() {
-        vec![vec![crate::ui::ResolvedToken {
-            kind: crate::ui::ResolvedTokenKind::StateIcon,
-            style: Default::default(),
-        }]]
+        &fallback[..]
     } else {
-        row.rows.clone()
+        &row.rows[..]
     };
-    for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 1 } else { 3 };
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
-        spans.extend(crate::ui::resolved_token_spans(
-            tokens,
-            icon,
-            status_style,
-            name_style,
-            secondary,
-            secondary,
-            palette,
-            rect.width.saturating_sub(indent as u16) as usize,
-        ));
-        Paragraph::new(Line::from(spans)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
-            buffer,
-        );
+    let nesting = if agents_grouped(config) { 2 } else { 0 };
+    let mut lines = Vec::new();
+    for (index, tokens) in rows.iter().enumerate() {
+        let indent = nesting + if index == 0 { 1 } else { 3 };
+        let available = width.saturating_sub(indent) as usize;
+        let spans = |max_width| {
+            crate::ui::resolved_token_spans(
+                tokens,
+                icon,
+                status_style,
+                name_style,
+                secondary,
+                secondary,
+                palette,
+                max_width,
+            )
+        };
+        let wrapped =
+            if available >= 2 && tokens.iter().any(|token| token.kind.text_value().is_some()) {
+                crate::ui::wrap_token_spans(
+                    tokens,
+                    &spans(usize::MAX),
+                    icon.0,
+                    available,
+                    AGENT_ROW_MAX_LINES,
+                )
+            } else {
+                vec![spans(available)]
+            };
+        lines.extend(wrapped.into_iter().map(|spans| {
+            Line::from(
+                std::iter::once(Span::raw(" ".repeat(indent as usize)))
+                    .chain(spans)
+                    .collect::<Vec<_>>(),
+            )
+        }));
     }
+    lines
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {

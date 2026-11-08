@@ -342,9 +342,10 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
         state.set_endpoint_snapshot(&endpoint_id, projection);
     }
     state.compose(100, 28).unwrap();
-    state.agent_scroll = 6;
+    // Item 7 is past the local workspace heading, so both machines stay on screen.
+    state.agent_scroll = 7;
     state.compose(100, 28).unwrap();
-    assert_eq!(state.agent_scroll, 6);
+    assert_eq!(state.agent_scroll, 7);
     (state, remote)
 }
 
@@ -570,7 +571,7 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         state.workspace_scroll = 3;
         state.tab_scroll = 2;
         assert!(state.activate_endpoint_projection(&endpoint_id));
-        assert_eq!(state.agent_scroll, 6);
+        assert_eq!(state.agent_scroll, 7);
         assert_eq!(state.workspace_scroll, 0);
         assert_eq!(state.tab_scroll, 0);
         assert!(state.pane_surface.is_none());
@@ -579,7 +580,7 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         next_surface.boot_id = state.endpoint_boot_id(&endpoint_id).unwrap().into();
         state.set_pane_surface(next_surface);
         state.compose(100, 28).unwrap();
-        assert_eq!(state.agent_scroll, 6);
+        assert_eq!(state.agent_scroll, 7);
         assert_eq!(state.hits.endpoint_agents, visible);
     }
 }

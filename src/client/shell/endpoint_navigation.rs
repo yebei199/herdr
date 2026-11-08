@@ -100,6 +100,39 @@ impl ClientShellState {
         true
     }
 
+    /// Clicking a workspace heading in the grouped agent panel focuses that workspace.
+    pub(super) fn handle_agent_group_click(
+        &mut self,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some(hit) = self
+            .hits
+            .agent_groups
+            .iter()
+            .find(|hit| super::contains(hit.rect, point))
+        else {
+            return false;
+        };
+        let workspace_id = hit.workspace_id.clone();
+        match hit.endpoint_id.clone() {
+            Some(endpoint_id) => {
+                self.focus_or_activate(
+                    endpoint_id,
+                    ClientEndpointFocusTarget::Workspace(workspace_id),
+                    outcome,
+                );
+            }
+            None => self.push_endpoint_method(
+                crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
+                    workspace_id,
+                }),
+                outcome,
+            ),
+        }
+        true
+    }
+
     pub(super) fn handle_endpoint_navigation(
         &mut self,
         action: crate::input::KeybindAction,
@@ -212,7 +245,7 @@ impl ClientShellState {
                     self.reveal_endpoint_agent(
                         &target.endpoint_id,
                         &target.pane_id,
-                        self.hits.agent_body.height,
+                        self.hits.agent_body,
                     );
                 } else {
                     self.pending_agent_reveal =

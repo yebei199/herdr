@@ -1,4 +1,5 @@
 mod tokens;
+mod wrap;
 
 use ratatui::{
     layout::Rect,
@@ -10,6 +11,7 @@ pub(crate) use self::tokens::{
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
     ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
 };
+pub(crate) use self::wrap::wrap_token_spans;
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
 use crate::app::AppState;
@@ -115,15 +117,7 @@ pub(crate) fn resolved_token_spans(
 ) -> Vec<Span<'static>> {
     let fixed_widths = resolved
         .iter()
-        .map(|token| match &token.kind {
-            ResolvedTokenKind::StateIcon => display_width(state_icon.0),
-            ResolvedTokenKind::GitStatus { ahead, behind } => {
-                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
-                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
-                    + usize::from(*ahead > 0 && *behind > 0)
-            }
-            _ => 0,
-        })
+        .map(|token| fixed_token_width(&token.kind, state_icon.0))
         .collect::<Vec<_>>();
     let flexible_widths = resolved
         .iter()
@@ -272,6 +266,18 @@ pub(crate) fn resolved_token_spans(
         }
     }
     spans
+}
+
+fn fixed_token_width(kind: &ResolvedTokenKind, state_icon: &str) -> usize {
+    match kind {
+        ResolvedTokenKind::StateIcon => display_width(state_icon),
+        ResolvedTokenKind::GitStatus { ahead, behind } => {
+            usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
+                + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
+                + usize::from(*ahead > 0 && *behind > 0)
+        }
+        _ => 0,
+    }
 }
 
 fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {

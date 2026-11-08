@@ -217,7 +217,7 @@ impl ClientShellState {
         let pending_agent_reveal = self
             .pending_agent_reveal
             .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
-        let agent_body_height = self.hits.agent_body.height;
+        let agent_body = self.hits.agent_body;
         let Some(endpoint) = self
             .endpoints
             .iter()
@@ -245,7 +245,7 @@ impl ClientShellState {
             self.agent_scroll = agent_scroll;
         }
         if let Some((_, pane_id)) = pending_agent_reveal {
-            self.reveal_endpoint_agent(endpoint_id, &pane_id, agent_body_height);
+            self.reveal_endpoint_agent(endpoint_id, &pane_id, agent_body);
         }
         true
     }
