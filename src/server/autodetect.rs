@@ -2,7 +2,8 @@
 //!
 //! When the user runs `herdr` with no subcommand:
 //! 1. Check if a server is already listening on the client socket
-//! 2. If no server → spawn one as a background daemon → wait for socket readiness (up to 15s)
+//! 2. If no server → start one (a background daemon, or the systemd unit named by
+//!    `HERDR_SYSTEMD_UNIT`) → wait for socket readiness (up to 15s)
 //! 3. Attach as a client to the server
 
 use std::io;
@@ -24,6 +25,11 @@ const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Timeout for checking the stable JSON API before attaching to the binary protocol socket.
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Names a systemd user unit that owns the default session's server. When set, a
+/// client that finds no server starts this unit instead of spawning a daemon, so
+/// the server always runs under the service manager. Other sessions still spawn.
+pub(crate) const SYSTEMD_UNIT_ENV_VAR: &str = "HERDR_SYSTEMD_UNIT";
 
 /// Private daemon-start hint used to seed a fresh headless server from the
 /// directory where the user ran `herdr`.
@@ -191,6 +197,68 @@ fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<(
 // Server spawning
 // ---------------------------------------------------------------------------
 
+/// How a missing server gets started.
+#[derive(Debug, PartialEq, Eq)]
+enum ServerLauncher {
+    SystemdUnit(String),
+    Daemon,
+}
+
+/// The unit only serves the default session's socket, so any other target
+/// (a named session or a socket override elsewhere) keeps the daemon path.
+fn server_launcher(
+    unit: Option<String>,
+    socket_path: &Path,
+    default_socket_path: &Path,
+) -> ServerLauncher {
+    match unit {
+        Some(unit) if !unit.is_empty() && socket_path == default_socket_path => {
+            ServerLauncher::SystemdUnit(unit)
+        }
+        _ => ServerLauncher::Daemon,
+    }
+}
+
+/// Starts a server that will listen on `socket_path`. Callers wait for the
+/// socket afterwards with [`wait_for_server_socket`].
+pub fn start_server(socket_path: &Path) -> io::Result<()> {
+    let launcher = server_launcher(
+        std::env::var(SYSTEMD_UNIT_ENV_VAR).ok(),
+        socket_path,
+        &crate::session::client_socket_path_for(None),
+    );
+    match launcher {
+        ServerLauncher::SystemdUnit(unit) => start_systemd_unit(&unit),
+        ServerLauncher::Daemon => spawn_server_daemon().map(|_| ()),
+    }
+}
+
+fn systemd_start_command(unit: &str) -> Command {
+    let mut command = Command::new("systemctl");
+    command
+        .args(["--user", "start", unit])
+        .stdin(std::process::Stdio::null());
+    command
+}
+
+fn start_systemd_unit(unit: &str) -> io::Result<()> {
+    info!(unit, "starting server through systemd user unit");
+    let output = systemd_start_command(unit).output().map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("failed to run `systemctl --user start {unit}`: {err}"),
+        )
+    })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "`systemctl --user start {unit}` failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 /// Spawns the herdr server as a background daemon process.
 ///
 /// The server process is fully detached:
@@ -201,7 +269,7 @@ fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<(
 ///   this CLI invocation explicitly selected a session.
 ///
 /// Returns the PID of the spawned server process.
-pub fn spawn_server_daemon() -> io::Result<u32> {
+fn spawn_server_daemon() -> io::Result<u32> {
     let exe = std::env::current_exe().map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -300,7 +368,7 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 ///
 /// Flow:
 /// 1. Check if a server is listening on the client socket
-/// 2. If no server → spawn server daemon → wait for socket readiness
+/// 2. If no server → start one ([`start_server`]) → wait for socket readiness
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
@@ -323,9 +391,9 @@ pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
                 validate_running_server_compatibility(false)
             }
         } else {
-            info!("no server running, spawning server daemon");
-            spawn_server_daemon()
-                .and_then(|_| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT))
+            info!("no server running, starting one");
+            start_server(&socket_path)
+                .and_then(|()| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT))
         }
     });
     if let Err(error) = startup {
@@ -463,6 +531,49 @@ mod tests {
         std::env::remove_var("HERDR_CLIENT_SOCKET_PATH");
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
+    }
+
+    #[test]
+    fn systemd_unit_starts_only_the_default_session_server() {
+        let default = Path::new("/run/herdr/herdr-client.sock");
+        let unit = || Some("herdr-server".to_string());
+
+        assert_eq!(
+            server_launcher(unit(), default, default),
+            ServerLauncher::SystemdUnit("herdr-server".into())
+        );
+        assert_eq!(
+            server_launcher(None, default, default),
+            ServerLauncher::Daemon
+        );
+        assert_eq!(
+            server_launcher(Some(String::new()), default, default),
+            ServerLauncher::Daemon
+        );
+        assert_eq!(
+            server_launcher(
+                unit(),
+                Path::new("/run/herdr/sessions/work/herdr-client.sock"),
+                default
+            ),
+            ServerLauncher::Daemon
+        );
+    }
+
+    #[test]
+    fn systemd_start_command_starts_the_user_unit() {
+        let command = systemd_start_command("herdr-server");
+        assert_eq!(command.get_program(), OsStr::new("systemctl"));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["--user", "start", "herdr-server"]);
+    }
+
+    #[test]
+    fn failed_systemd_start_reports_the_unit() {
+        let err = start_systemd_unit("herdr-test-unit-that-does-not-exist.service").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("herdr-test-unit-that-does-not-exist"));
     }
 
     #[test]
