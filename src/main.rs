@@ -206,7 +206,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # type = "shell" runs detached in the background.
 # type = "pane" opens a temporary pane and closes it when the command exits.
 # type = "popup" opens a session-modal terminal without changing the tab layout.
-# type = "float" is a popup bound to the workspace: its key also hides it, even while a
+# type = "float" is a popup bound to the tab: its key also hides it, even while a
 # program runs inside, and the command keeps running until the key brings it back.
 # Bind floats to a direct chord; a prefix chord cannot hide them because the popup owns input.
 # Popup width and height accept terminal cells or percentages such as "80%".

@@ -14,11 +14,24 @@ pub(crate) struct PluginPaneRecord {
     pub entrypoint: String,
 }
 
-/// Identifies a float: one per command per workspace.
+/// Identifies a float: one per command per tab.
+/// A tab is named by its workspace and public tab number, the pair behind its public id:
+/// numbers are never reused within a workspace and a tab never changes workspace, so the
+/// pair survives reordering and names exactly one tab's lifetime.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FloatKey {
     pub workspace_id: String,
+    pub tab_number: usize,
     pub command: String,
+}
+
+impl FloatKey {
+    pub(crate) fn tab_is_live(&self, workspaces: &[Workspace]) -> bool {
+        workspaces
+            .iter()
+            .find(|ws| ws.id == self.workspace_id)
+            .is_some_and(|ws| ws.tabs.iter().any(|tab| tab.number == self.tab_number))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

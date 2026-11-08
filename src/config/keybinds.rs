@@ -155,7 +155,7 @@ pub enum CustomCommandAction {
     Shell,
     Pane,
     Popup,
-    /// Workspace-bound popup whose key hides it without ending the command.
+    /// Tab-bound popup whose key hides it without ending the command.
     Float,
     PluginAction,
 }

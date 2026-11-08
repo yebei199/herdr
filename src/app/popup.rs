@@ -37,7 +37,7 @@ impl App {
         self.render_notify.notify_one();
     }
 
-    /// Shows the active workspace's float for this binding, or hides it when it is up.
+    /// Shows the active tab's float for this binding, or hides it when it is up.
     /// The terminal outlives hiding, so a running command is found as it was left.
     pub(crate) fn toggle_float(
         &mut self,
@@ -48,8 +48,12 @@ impl App {
             .active
             .and_then(|index| self.state.workspaces.get(index))
             .ok_or_else(|| std::io::Error::other("no active workspace"))?;
+        let tab = workspace
+            .active_tab()
+            .ok_or_else(|| std::io::Error::other("no active tab"))?;
         let key = FloatKey {
             workspace_id: workspace.id.clone(),
+            tab_number: tab.number,
             command: binding.command.clone(),
         };
         let visible = self
@@ -280,17 +284,15 @@ impl App {
 }
 
 impl AppState {
-    /// A float belongs to its workspace, so it ends with it, however the workspace went away.
+    /// A float belongs to its tab, so it ends with it, whether the tab or its workspace closed.
     pub(crate) fn queue_orphan_float_shutdowns(&mut self) {
         if self.hidden_floats.is_empty() {
             return;
         }
-        let live: std::collections::HashSet<&str> =
-            self.workspaces.iter().map(|ws| ws.id.as_str()).collect();
         let orphans: Vec<FloatKey> = self
             .hidden_floats
             .keys()
-            .filter(|key| !live.contains(key.workspace_id.as_str()))
+            .filter(|key| !key.tab_is_live(&self.workspaces))
             .cloned()
             .collect();
         for key in orphans {
@@ -411,14 +413,41 @@ mod tests {
         }
     }
 
+    fn active_tab_key(app: &App, command: &str) -> FloatKey {
+        let ws = &app.state.workspaces[app.state.active.unwrap()];
+        FloatKey {
+            workspace_id: ws.id.clone(),
+            tab_number: ws.active_tab().unwrap().number,
+            command: command.into(),
+        }
+    }
+
     fn app_with_float(command: &str) -> (App, FloatKey) {
         let mut app = app_with_popup();
-        let key = FloatKey {
-            workspace_id: app.state.workspaces[0].id.clone(),
-            command: command.into(),
-        };
+        let key = active_tab_key(&app, command);
         app.state.popup_pane.as_mut().unwrap().float = Some(key.clone());
         (app, key)
+    }
+
+    /// Parks a float for the active tab as if it had been shown and hidden there.
+    fn hide_float_in_active_tab(app: &mut App, command: &str) -> (FloatKey, TerminalId) {
+        let key = active_tab_key(app, command);
+        let terminal_id = TerminalId::alloc();
+        app.state.terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id.clone(), PathBuf::from("/float")),
+        );
+        app.state.hidden_floats.insert(
+            key.clone(),
+            PopupPaneState {
+                pane_id: PaneId::alloc(),
+                terminal_id: terminal_id.clone(),
+                width: None,
+                height: None,
+                float: Some(key.clone()),
+            },
+        );
+        (key, terminal_id)
     }
 
     #[test]
@@ -448,33 +477,13 @@ mod tests {
     }
 
     #[test]
-    fn float_is_bound_to_its_workspace() {
+    fn float_is_bound_to_its_tab() {
         let (mut app, first_key) = app_with_float("fish");
         app.hide_visible_float();
         let first_terminal = app.state.hidden_floats[&first_key].terminal_id.clone();
-        app.state
-            .workspaces
-            .push(crate::workspace::Workspace::test_new("other"));
-        app.state.active = Some(1);
-        let second_key = FloatKey {
-            workspace_id: app.state.workspaces[1].id.clone(),
-            command: "fish".into(),
-        };
-        let second_terminal = TerminalId::alloc();
-        app.state.terminals.insert(
-            second_terminal.clone(),
-            TerminalState::new(second_terminal.clone(), PathBuf::from("/other")),
-        );
-        app.state.hidden_floats.insert(
-            second_key.clone(),
-            PopupPaneState {
-                pane_id: PaneId::alloc(),
-                terminal_id: second_terminal.clone(),
-                width: None,
-                height: None,
-                float: Some(second_key),
-            },
-        );
+        let second_tab = app.state.workspaces[0].test_add_tab(None);
+        app.state.workspaces[0].active_tab = second_tab;
+        let (_, second_terminal) = hide_float_in_active_tab(&mut app, "fish");
 
         app.toggle_float(&float_binding("fish")).unwrap();
 
@@ -483,6 +492,31 @@ mod tests {
         assert_eq!(
             app.state.hidden_floats[&first_key].terminal_id,
             first_terminal
+        );
+    }
+
+    #[test]
+    fn tabs_in_one_workspace_each_get_their_own_float() {
+        let (mut app, first_key) = app_with_float("fish");
+        let first_terminal = app.state.popup_pane.as_ref().unwrap().terminal_id.clone();
+        app.hide_visible_float();
+        let second_tab = app.state.workspaces[0].test_add_tab(None);
+        app.state.workspaces[0].active_tab = second_tab;
+        let (second_key, second_terminal) = hide_float_in_active_tab(&mut app, "fish");
+        assert_ne!(first_key, second_key);
+
+        app.toggle_float(&float_binding("fish")).unwrap();
+        let shown = app.state.popup_pane.as_ref().map(|p| p.terminal_id.clone());
+        assert_eq!(shown, Some(second_terminal.clone()));
+        app.toggle_float(&float_binding("fish")).unwrap();
+        app.state.workspaces[0].active_tab = 0;
+        app.toggle_float(&float_binding("fish")).unwrap();
+
+        let shown = app.state.popup_pane.as_ref().map(|p| p.terminal_id.clone());
+        assert_eq!(shown, Some(first_terminal));
+        assert_eq!(
+            app.state.hidden_floats[&second_key].terminal_id,
+            second_terminal
         );
     }
 
@@ -507,6 +541,26 @@ mod tests {
     }
 
     #[test]
+    fn hidden_float_ends_with_its_tab() {
+        let (mut app, closed_key) = app_with_float("fish");
+        let closed_terminal = app.state.popup_pane.as_ref().unwrap().terminal_id.clone();
+        app.hide_visible_float();
+        let other_tab = app.state.workspaces[0].test_add_tab(None);
+        app.state.workspaces[0].active_tab = other_tab;
+        let (other_key, other_terminal) = hide_float_in_active_tab(&mut app, "fish");
+
+        assert!(app.state.workspaces[0].close_tab(0));
+        app.shutdown_detached_terminal_runtimes();
+
+        assert!(!app.state.hidden_floats.contains_key(&closed_key));
+        assert!(!app.state.terminals.contains_key(&closed_terminal));
+        assert_eq!(
+            app.state.hidden_floats[&other_key].terminal_id,
+            other_terminal
+        );
+    }
+
+    #[test]
     fn hidden_float_ends_with_its_workspace() {
         let (mut app, _) = app_with_float("fish");
         let terminal_id = app.state.popup_pane.as_ref().unwrap().terminal_id.clone();
@@ -520,7 +574,19 @@ mod tests {
     }
 
     #[test]
-    fn hidden_float_survives_while_its_workspace_lives() {
+    fn hidden_float_follows_its_tab_through_reordering() {
+        let (mut app, key) = app_with_float("fish");
+        app.hide_visible_float();
+        let other_tab = app.state.workspaces[0].test_add_tab(None);
+        assert!(app.state.workspaces[0].move_tab(other_tab, 0));
+
+        app.shutdown_detached_terminal_runtimes();
+
+        assert!(app.state.hidden_floats.contains_key(&key));
+    }
+
+    #[test]
+    fn hidden_float_survives_while_its_tab_lives() {
         let (mut app, key) = app_with_float("fish");
         app.hide_visible_float();
 
