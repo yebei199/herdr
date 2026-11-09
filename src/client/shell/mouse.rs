@@ -914,6 +914,9 @@ impl ClientShellState {
             return;
         }
         if let Some(hit) = self.hits.popup.clone() {
+            if self.handle_popup_selection_mouse(&hit, mouse, point, outcome) {
+                return;
+            }
             if super::contains(hit.inner_rect, point) {
                 match mouse.kind {
                     MouseEventKind::Down(button) => {
@@ -1756,25 +1759,7 @@ impl ClientShellState {
             return;
         }
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) && self.selection.is_some() {
-            self.stop_selection_autoscroll();
-            let copied = self
-                .selection
-                .as_mut()
-                .is_some_and(crate::selection::Selection::finish);
-            if copied && self.config.copy_on_select {
-                self.request_selection_copy(outcome, true);
-                self.selection = None;
-            } else if self
-                .selection
-                .as_ref()
-                .is_some_and(crate::selection::Selection::is_just_click)
-            {
-                self.selection = None;
-            }
-            if copied {
-                self.last_pane_click = None;
-            }
-            outcome.repaint = true;
+            self.finish_pointer_selection(outcome);
             return;
         }
         if self.scroll_in_progress_selection(mouse, outcome) {
@@ -2335,6 +2320,70 @@ impl ClientShellState {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn finish_pointer_selection(&mut self, outcome: &mut ClientShellInput) {
+        self.stop_selection_autoscroll();
+        let copied = self
+            .selection
+            .as_mut()
+            .is_some_and(crate::selection::Selection::finish);
+        if copied && self.config.copy_on_select {
+            self.request_selection_copy(outcome, true);
+            self.selection = None;
+        } else if self
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_just_click)
+        {
+            self.selection = None;
+        }
+        if copied {
+            self.last_pane_click = None;
+        }
+        outcome.repaint = true;
+    }
+
+    /// A popup whose program ignores the mouse gets the same drag-to-copy as a pane. Its
+    /// selection stays in viewport rows: the popup surface carries no scroll metrics.
+    fn handle_popup_selection_mouse(
+        &mut self,
+        hit: &PaneHit,
+        mouse: MouseEvent,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let selecting = self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == hit.pane_id);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.selection.take().is_some() {
+                    outcome.repaint = true;
+                }
+                if !hit.mouse_reporting && super::contains(hit.inner_rect, point) {
+                    self.selection = Some(crate::selection::Selection::anchor(
+                        hit.pane_id.clone(),
+                        mouse.row.saturating_sub(hit.inner_rect.y),
+                        mouse.column.saturating_sub(hit.inner_rect.x),
+                        None,
+                    ));
+                }
+                false
+            }
+            MouseEventKind::Drag(MouseButton::Left) if selecting => {
+                self.update_selection_drag(hit, mouse.column, mouse.row, outcome);
+                outcome.repaint |= !outcome.actions.is_empty()
+                    || self.request_selection_drag_repaint(std::time::Instant::now());
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) if selecting => {
+                self.finish_pointer_selection(outcome);
+                true
+            }
+            _ => false,
         }
     }
 

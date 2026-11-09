@@ -14,7 +14,7 @@ use crate::api::schema::{
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
     PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
     PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneZoomResult, PopupSelectionReadParams, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -286,6 +286,48 @@ impl App {
                 },
             ),
             Err((code, message)) => encode_error(id, code, message),
+        }
+    }
+
+    pub(super) fn handle_popup_selection_read(
+        &mut self,
+        id: String,
+        params: PopupSelectionReadParams,
+    ) -> String {
+        let Some(popup) = self
+            .state
+            .popup_pane
+            .as_ref()
+            .filter(|popup| popup.terminal_id.as_str() == params.terminal_id)
+        else {
+            return encode_error(id, "popup_not_open", "popup is not open");
+        };
+        let Some(runtime) = self.terminal_runtimes.get(&popup.terminal_id) else {
+            return encode_error(id, "popup_not_open", "popup is not open");
+        };
+        let metrics = runtime.scroll_metrics();
+        let absolute = |point: PaneTextPoint| {
+            u16::try_from(point.row).ok().map(|row| {
+                (
+                    crate::selection::absolute_row_for_viewport(row, metrics),
+                    point.col,
+                )
+            })
+        };
+        let (Some(anchor), Some(cursor)) = (absolute(params.anchor), absolute(params.cursor))
+        else {
+            return encode_error(id, "selection_unavailable", "row is outside the viewport");
+        };
+        let selection = crate::selection::Selection::absolute_range(popup.pane_id, anchor, cursor);
+        match runtime.extract_selection(&selection) {
+            Some(text) => encode_success(
+                id,
+                ResponseResult::PaneSelection {
+                    pane_id: params.terminal_id,
+                    text,
+                },
+            ),
+            None => encode_error(id, "selection_unavailable", "selection text is unavailable"),
         }
     }
 
@@ -2545,6 +2587,38 @@ mod tests {
             pane.scroll.expect("scroll metrics").offset_from_bottom,
             max_offset as u64
         );
+    }
+
+    #[tokio::test]
+    async fn api_popup_selection_read_counts_rows_from_the_popup_viewport() {
+        let (mut app, _) = app_with_test_workspace();
+        let (_, terminal_id) = app.install_test_popup_runtime(
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                1000,
+                b"l1\r\nl2\r\nl3\r\nl4\r\nl5",
+            ),
+        );
+        let params = |terminal_id: String| PopupSelectionReadParams {
+            terminal_id,
+            anchor: PaneTextPoint { row: 0, col: 0 },
+            cursor: PaneTextPoint { row: 1, col: 1 },
+        };
+
+        let response =
+            app.handle_popup_selection_read("req".into(), params(terminal_id.to_string()));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            success.result,
+            ResponseResult::PaneSelection {
+                pane_id: terminal_id.to_string(),
+                text: "l3\nl4".into(),
+            }
+        );
+
+        let stale = app.handle_popup_selection_read("req".into(), params("other".into()));
+        assert!(stale.contains("popup_not_open"), "{stale}");
     }
 
     #[tokio::test]

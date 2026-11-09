@@ -580,6 +580,25 @@ impl ClientShellState {
                 ratatui::widgets::Widget::render(block, geometry.outer, &mut composed);
                 frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
                 blit_pane_surface(&mut frame, &popup.frame, geometry.inner);
+                if self.selection.as_ref().is_some_and(|selection| {
+                    selection.is_visible() && selection.pane_id == popup.terminal_id
+                }) {
+                    let cursor = frame.cursor.clone();
+                    let mut composed = frame.to_ratatui_buffer()?;
+                    crate::ui::render_selection_highlight(
+                        self.selection.as_ref(),
+                        &mut composed,
+                        &popup.terminal_id,
+                        geometry.inner,
+                        None,
+                        &self.config.palette,
+                        crate::terminal_theme::TerminalTheme {
+                            background: self.host_background,
+                            ..Default::default()
+                        },
+                    );
+                    frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+                }
                 self.hits.popup = Some(PaneHit {
                     rect: geometry.outer,
                     inner_rect: geometry.inner,

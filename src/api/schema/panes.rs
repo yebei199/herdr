@@ -255,6 +255,14 @@ pub struct PaneSelectionReadParams {
     pub content_revision: Option<u64>,
 }
 
+/// Rows count from the top of the visible popup viewport, not from the scrollback start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PopupSelectionReadParams {
+    pub terminal_id: String,
+    pub anchor: PaneTextPoint,
+    pub cursor: PaneTextPoint,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneCopyMotion {

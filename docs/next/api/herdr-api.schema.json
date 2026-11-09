@@ -3799,6 +3799,26 @@
           ],
           "type": "object"
         },
+        "PopupSelectionReadParams": {
+          "description": "Rows count from the top of the visible popup viewport, not from the scrollback start.",
+          "properties": {
+            "anchor": {
+              "$ref": "#/schemas/request/$defs/PaneTextPoint"
+            },
+            "cursor": {
+              "$ref": "#/schemas/request/$defs/PaneTextPoint"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "terminal_id",
+            "anchor",
+            "cursor"
+          ],
+          "type": "object"
+        },
         "PopupSize": {
           "oneOf": [
             {
@@ -6033,6 +6053,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "popup.selection.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PopupSelectionReadParams"
             }
           },
           "required": [

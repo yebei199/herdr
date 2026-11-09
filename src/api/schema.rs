@@ -215,6 +215,8 @@ pub enum Method {
     PaneClose(PaneTarget),
     #[serde(rename = "popup.close")]
     PopupClose(EmptyParams),
+    #[serde(rename = "popup.selection.read")]
+    PopupSelectionRead(PopupSelectionReadParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
     #[serde(rename = "events.wait")]

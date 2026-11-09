@@ -277,6 +277,22 @@ impl ClientShellState {
             return;
         };
         let pane_id = selection.pane_id.clone();
+        if self.popup_terminal_id.as_ref() == Some(&pane_id) {
+            let (anchor, cursor) = selection.ordered_cells();
+            let point = |(row, col)| crate::api::schema::PaneTextPoint { row, col };
+            self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::PopupSelectionRead(
+                    crate::api::schema::PopupSelectionReadParams {
+                        terminal_id: pane_id,
+                        anchor: point(anchor),
+                        cursor: point(cursor),
+                    },
+                ),
+                PendingEndpointKind::SelectionCopy,
+                outcome,
+            );
+            return;
+        }
         let content_revision = self
             .pane_surface
             .as_ref()

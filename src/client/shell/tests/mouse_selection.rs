@@ -1230,3 +1230,56 @@ fn context_menu_keyboard_and_outside_click_are_client_owned() {
     assert!(outside.repaint);
     assert!(state.overlay.is_none());
 }
+
+fn popup_drag(state: &mut ClientShellState, columns: std::ops::Range<u16>) -> ClientShellInput {
+    let popup = state.hits.popup.clone().expect("popup hit");
+    let mut mouse = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: popup.inner_rect.x + columns.start,
+        row: popup.inner_rect.y,
+        modifiers: KeyModifiers::empty(),
+    };
+    state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    mouse.kind = MouseEventKind::Drag(MouseButton::Left);
+    mouse.column = popup.inner_rect.x + columns.end;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    mouse.kind = MouseEventKind::Up(MouseButton::Left);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)])
+}
+
+#[test]
+fn popup_drag_copies_through_the_popup_viewport() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut surface = surface_with_popup();
+    surface.popup.as_mut().expect("popup").mouse_reporting = false;
+    state.set_pane_surface(surface);
+    state.compose(106, 20).expect("popup frame");
+
+    let release = popup_drag(&mut state, 1..4);
+    assert!(release.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method,
+                crate::api::schema::Method::PopupSelectionRead(params)
+                    if params.terminal_id == "terminal-popup"
+                        && params.anchor == crate::api::schema::PaneTextPoint { row: 0, col: 1 }
+                        && params.cursor == crate::api::schema::PaneTextPoint { row: 0, col: 4 })
+    )));
+}
+
+#[test]
+fn popup_that_reports_the_mouse_keeps_its_drags() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface_with_popup());
+    state.compose(106, 20).expect("popup frame");
+
+    let release = popup_drag(&mut state, 1..4);
+    assert!(state.selection.is_none());
+    assert!(!release.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::PopupSelectionRead(_))
+    )));
+}
