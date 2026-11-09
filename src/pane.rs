@@ -5270,7 +5270,7 @@ mod tests {
         let runtime = PaneRuntime::test_with_screen_bytes(
             80,
             24,
-            b"\x1b[>5u\x1b[>4;2m\x1b[?1h\x1b[?2004h\x1b[?1004h\x1b[?1002h\x1b[?1006h\x1b[?2031h",
+            b"\x1b[>5u\x1b[>4;2m\x1b[?1h\x1b[?2004h\x1b[?1004h\x1b[?1002h\x1b[?1006h\x1b[?2031h\x1b[?2048h",
         );
 
         runtime.test_process_pty_bytes("\x1b]2;✳ 修复🙂标题\x1b\\".as_bytes());
@@ -5292,6 +5292,7 @@ mod tests {
                 mouse_alternate_scroll: true,
                 modify_other_keys: true,
                 color_scheme_reporting: true,
+                in_band_size_reports: true,
             })
         );
     }

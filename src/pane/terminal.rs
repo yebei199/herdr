@@ -144,6 +144,9 @@ pub struct InputState {
     pub modify_other_keys: bool,
     #[serde(default)]
     pub color_scheme_reporting: bool,
+    /// DEC 2048 notifications keep attached applications in sync after handoff.
+    #[serde(default)]
+    pub in_band_size_reports: bool,
 }
 
 #[cfg(test)]
@@ -1620,6 +1623,9 @@ impl GhosttyPaneTerminal {
             crate::ghostty::MODE_COLOR_SCHEME_REPORT,
             input_state.color_scheme_reporting,
         );
+        let _ = core
+            .terminal
+            .mode_set(2048, input_state.in_band_size_reports);
 
         core.terminal
             .write(b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
@@ -1973,6 +1979,7 @@ impl GhosttyPaneTerminal {
                 .terminal
                 .mode_get(crate::ghostty::MODE_COLOR_SCHEME_REPORT)
                 .ok()?,
+            in_band_size_reports: core.terminal.mode_get(2048).ok()?,
         })
     }
 
@@ -3680,6 +3687,7 @@ mod tests {
             mouse_alternate_scroll: false,
             modify_other_keys: false,
             color_scheme_reporting: false,
+            in_band_size_reports: false,
         }
         .plain_page_keys_use_host_scrollback());
     }
@@ -5199,6 +5207,7 @@ mod tests {
             mouse_alternate_scroll: true,
             modify_other_keys: true,
             color_scheme_reporting: true,
+            in_band_size_reports: true,
         });
 
         assert_eq!(
@@ -5213,6 +5222,7 @@ mod tests {
                 mouse_alternate_scroll: true,
                 modify_other_keys: true,
                 color_scheme_reporting: true,
+                in_band_size_reports: true,
             })
         );
         assert_eq!(pane.modify_other_keys_level(), 2);
@@ -6190,6 +6200,37 @@ mod tests {
             responses,
             vec![Bytes::from_static(b"\x1B[48;40;100;720;900t")]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_preserves_in_band_resize_notifications() {
+        for enabled in [false, true] {
+            let (tx, _rx) = mpsc::channel(4);
+            let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+            terminal.mode_set(2048, enabled).unwrap();
+            let source = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+            let serialized = serde_json::to_vec(&source.input_state().unwrap()).unwrap();
+            let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+            let restored = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+            restored.seed_handoff_input_state(serde_json::from_slice(&serialized).unwrap());
+
+            let replies = restored.resize(40, 100, 9, 18);
+            let expected = if enabled {
+                vec![Bytes::from_static(b"\x1B[48;40;100;720;900t")]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(replies, expected);
+
+            let mut legacy = serde_json::to_value(source.input_state().unwrap()).unwrap();
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("in_band_size_reports");
+            let legacy: InputState = serde_json::from_value(legacy).unwrap();
+            assert!(!legacy.in_band_size_reports);
+        }
     }
 
     #[test]
