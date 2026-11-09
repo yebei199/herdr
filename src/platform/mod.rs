@@ -16,6 +16,7 @@ pub(crate) fn initialize_service_notifications() {
 }
 
 /// Pass service ownership to replacement servers only.
+#[cfg(unix)]
 pub(crate) fn configure_service_notifications(command: &mut std::process::Command) {
     #[cfg(target_os = "linux")]
     service_notify::configure_child(command);
@@ -24,6 +25,7 @@ pub(crate) fn configure_service_notifications(command: &mut std::process::Comman
 }
 
 /// Detect an unreachable service manager while handoff can still roll back.
+#[cfg(unix)]
 pub(crate) fn check_service_notifications() -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     return service_notify::check_connection();
@@ -32,6 +34,7 @@ pub(crate) fn check_service_notifications() -> std::io::Result<()> {
 }
 
 /// Adopt before allowing an older exporter to exit; undo an aborted commit.
+#[cfg(unix)]
 pub(crate) fn commit_service_handoff(
     commit: impl FnOnce() -> std::io::Result<()>,
 ) -> std::io::Result<()> {
