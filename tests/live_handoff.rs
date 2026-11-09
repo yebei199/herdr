@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
+#[path = "live_handoff/popups.rs"]
+mod popups;
 pub mod support;
 
 use std::fs;

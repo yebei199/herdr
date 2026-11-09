@@ -155,6 +155,8 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             },
         );
     }
+    let popup_imports =
+        crate::app::handoff::take_popup_imports(received.manifest.popups, &mut imports)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -162,7 +164,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         .map_err(io::Error::other)?;
 
     let result = rt.block_on(async {
-        let app = app::App::new_from_handoff(
+        let mut app = app::App::new_from_handoff(
             &loaded_config.config,
             config::config_diagnostic_summary(&loaded_config.diagnostics),
             api_rx,
@@ -170,6 +172,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             &received.manifest.snapshot,
             &mut imports,
         )?;
+        app.restore_handoff_popups(popup_imports)?;
         crate::server::handoff::report_restored(&mut received.stream)?;
         if std::env::var("HERDR_TEST_HANDOFF_IMPORT_FAIL").as_deref() == Ok("after_restored") {
             return Err(io::Error::other(
@@ -193,6 +196,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         // Carried across before any client attaches, so the first title sent is
         // the override rather than the configured one it replaced.
         server.api_window_title = received.manifest.api_window_title.take();
+        server.popup_owner_tab_id = received.manifest.popup_owner_tab_id.take();
         // A restart announced before the handoff still commits after it.
         server
             .host_shutdown_intent

@@ -18,7 +18,7 @@ pub(crate) struct PluginPaneRecord {
 /// A tab is named by its workspace and public tab number, the pair behind its public id:
 /// numbers are never reused within a workspace and a tab never changes workspace, so the
 /// pair survives reordering and names exactly one tab's lifetime.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FloatKey {
     pub workspace_id: String,
     pub tab_number: usize,
@@ -34,7 +34,7 @@ impl FloatKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PopupPaneState {
     pub pane_id: PaneId,
     pub terminal_id: crate::terminal::TerminalId,

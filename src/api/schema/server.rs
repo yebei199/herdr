@@ -22,6 +22,9 @@ pub struct ServerSshAgentRegisterParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerCapabilities {
     pub live_handoff: bool,
+    /// Includes visible popups and hidden floating terminals in a live handoff.
+    #[serde(default)]
+    pub live_handoff_auxiliary_terminals: bool,
     #[serde(default)]
     pub detached_server_daemon: bool,
     /// Stable client-owned endpoint generation supported by this server.

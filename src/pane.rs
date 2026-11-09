@@ -2298,6 +2298,7 @@ impl PaneRuntime {
         crate::handoff_runtime::HandoffRuntimeState {
             pane_id,
             child_pid,
+            agent_detection_disabled: self.detect_handle.is_none(),
             rows,
             cols,
             cell_width_px,
@@ -2512,6 +2513,7 @@ impl PaneRuntime {
         let crate::handoff_runtime::HandoffRuntimeState {
             pane_id,
             child_pid,
+            agent_detection_disabled,
             rows,
             cols,
             cell_width_px,
@@ -2647,16 +2649,21 @@ impl PaneRuntime {
 
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
-        let (detect_handle, detect_reset_notify, pending_release) = spawn_basic_detection_task(
-            pane_id,
-            child_pid.clone(),
-            terminal.clone(),
-            content_seq.clone(),
-            detection_content_seq.clone(),
-            full_lifecycle_authority_active.clone(),
-            self_reported_agent_active.clone(),
-            events,
-        );
+        let (detect_handle, detect_reset_notify, pending_release) = if agent_detection_disabled {
+            (None, Arc::new(Notify::new()), Arc::new(Mutex::new(None)))
+        } else {
+            let (handle, reset, pending) = spawn_basic_detection_task(
+                pane_id,
+                child_pid.clone(),
+                terminal.clone(),
+                content_seq.clone(),
+                detection_content_seq.clone(),
+                full_lifecycle_authority_active.clone(),
+                self_reported_agent_active.clone(),
+                events,
+            );
+            (Some(handle), reset, pending)
+        };
 
         Ok(Self {
             pane_id,
@@ -2678,7 +2685,7 @@ impl PaneRuntime {
             pending_release,
             preserve_processes_on_drop: true,
             compression,
-            detect_handle: Some(detect_handle),
+            detect_handle,
         })
     }
 

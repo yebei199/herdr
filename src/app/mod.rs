@@ -18,6 +18,8 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
 mod git_refresh;
+#[cfg(unix)]
+pub(crate) mod handoff;
 mod ids;
 mod popup;
 mod runtime;

@@ -42,6 +42,10 @@ pub(crate) struct HandoffManifest {
     pub expected_protocol: Option<u32>,
     pub snapshot: crate::persist::SessionSnapshot,
     pub panes: Vec<crate::handoff_runtime::HandoffRuntimeState>,
+    #[serde(default)]
+    pub popups: Vec<crate::app::handoff::HandoffPopup>,
+    #[serde(default)]
+    pub popup_owner_tab_id: Option<String>,
     /// An outer window title set over the API outlives the server that took the
     /// call, so a handoff carries it rather than falling back to the config.
     /// Absent from manifests written before this field existed.
@@ -240,7 +244,7 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
     let manifest_line = read_line_unbuffered(&mut stream)?;
     let manifest: HandoffManifest =
         serde_json::from_str(&manifest_line).map_err(io::Error::other)?;
-    if manifest.version != HANDOFF_VERSION {
+    if !matches!(manifest.version, 1 | 2) {
         return Err(io::Error::other(format!(
             "unsupported handoff version {}",
             manifest.version
@@ -267,6 +271,7 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
             crate::build_info::version()
         )));
     }
+    validate_runtime_identities(&manifest)?;
     stream.write_all(b"validated\n")?;
     stream.flush()?;
     let fds = recv_fds(&stream, manifest.panes.len())?;
@@ -275,6 +280,34 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
         fds,
         stream,
     })
+}
+
+#[cfg(unix)]
+fn validate_runtime_identities(manifest: &HandoffManifest) -> io::Result<()> {
+    let mut pane_ids = std::collections::HashSet::new();
+    if manifest
+        .panes
+        .iter()
+        .any(|pane| !pane_ids.insert(pane.pane_id))
+    {
+        return Err(io::Error::other("duplicate handoff runtime identity"));
+    }
+    let mut popup_ids = std::collections::HashSet::new();
+    let tiled_ids: std::collections::HashSet<_> = manifest
+        .snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.tabs)
+        .flat_map(|tab| tab.panes.keys().copied())
+        .collect();
+    if manifest.popups.iter().any(|popup| {
+        !pane_ids.contains(&popup.state.pane_id.raw())
+            || tiled_ids.contains(&popup.state.pane_id.raw())
+            || !popup_ids.insert(popup.state.pane_id.raw())
+    }) {
+        return Err(io::Error::other("invalid auxiliary handoff identity"));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -322,6 +355,8 @@ pub(crate) fn manifest_for(
         expected_protocol,
         snapshot,
         panes,
+        popups: Vec::new(),
+        popup_owner_tab_id: None,
         api_window_title,
         host_shutdown_intent,
     }
@@ -546,6 +581,64 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
         }
+    }
+
+    #[test]
+    fn auxiliary_handoff_rejects_duplicate_missing_and_tiled_runtime_ids() {
+        let runtime = serde_json::from_value(serde_json::json!({
+            "pane_id": 7, "child_pid": 1, "rows": 24, "cols": 80,
+            "cell_width_px": 0, "cell_height_px": 0
+        }))
+        .unwrap();
+        let mut manifest = manifest_for(empty_snapshot(), vec![runtime], None, None, None, None);
+        manifest.version = 2;
+        manifest.popups = vec![crate::app::handoff::HandoffPopup {
+            state: crate::app::state::PopupPaneState {
+                pane_id: crate::layout::PaneId::from_raw(7),
+                terminal_id: crate::terminal::TerminalId::alloc(),
+                width: None,
+                height: None,
+                float: None,
+            },
+            visible: true,
+            cwd: "/tmp".into(),
+            launch_argv: None,
+        }];
+        assert!(validate_runtime_identities(&manifest).is_ok());
+        manifest.panes.push(manifest.panes[0].clone());
+        assert!(validate_runtime_identities(&manifest).is_err());
+        manifest.panes.pop();
+        manifest.popups[0].state.pane_id = crate::layout::PaneId::from_raw(8);
+        assert!(validate_runtime_identities(&manifest).is_err());
+        manifest.popups[0].state.pane_id = crate::layout::PaneId::from_raw(7);
+        manifest.snapshot.workspaces.push(
+            serde_json::from_value(serde_json::json!({
+                "identity_cwd": "/tmp", "tabs": [{
+                    "layout": {"Pane": 7}, "panes": {"7": {"cwd": "/tmp"}}, "zoomed": false
+                }]
+            }))
+            .unwrap(),
+        );
+        assert!(validate_runtime_identities(&manifest).is_err());
+    }
+
+    #[test]
+    fn older_handoff_manifest_defaults_to_no_auxiliary_terminals() {
+        let mut value = serde_json::to_value(manifest_for(
+            empty_snapshot(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+        value.as_object_mut().unwrap().remove("popups");
+        value.as_object_mut().unwrap().remove("popup_owner_tab_id");
+        let manifest: HandoffManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(manifest.version, 1);
+        assert!(manifest.popups.is_empty());
+        assert!(manifest.popup_owner_tab_id.is_none());
     }
 
     #[test]

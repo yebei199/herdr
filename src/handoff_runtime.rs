@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct HandoffRuntimeState {
     pub pane_id: u32,
     pub child_pid: u32,
+    #[serde(default)]
+    pub agent_detection_disabled: bool,
     pub rows: u16,
     pub cols: u16,
     pub cell_width_px: u32,

@@ -70,6 +70,7 @@ pub(crate) fn start_server_with_stop_control(
 fn default_capabilities() -> Option<ServerCapabilities> {
     Some(ServerCapabilities {
         live_handoff: crate::platform::capabilities().live_handoff,
+        live_handoff_auxiliary_terminals: crate::platform::capabilities().live_handoff,
         detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
         endpoint_protocol_generation: Some(crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION),
         surface_interest: true,
@@ -1494,6 +1495,7 @@ mod tests {
             &tx,
             Some(ServerCapabilities {
                 live_handoff: true,
+                live_handoff_auxiliary_terminals: false,
                 detached_server_daemon: true,
                 endpoint_protocol_generation: Some(
                     crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION,

@@ -45,6 +45,15 @@ impl HeadlessServer {
                 }
             }
         }
+        let popups = self.app.capture_handoff_popups()?;
+        for popup in &popups {
+            if pane_by_terminal
+                .insert(popup.state.terminal_id.clone(), popup.state.pane_id.raw())
+                .is_some()
+            {
+                return Err(io::Error::other("duplicate auxiliary terminal attachment"));
+            }
+        }
 
         if self
             .app
@@ -53,7 +62,7 @@ impl HeadlessServer {
             .any(|(id, _)| !pane_by_terminal.contains_key(id))
         {
             return Err(io::Error::other(
-                "live handoff cannot yet transfer popup or floating terminals; current server retained",
+                "live handoff cannot transfer an unassigned terminal; current server retained",
             ));
         }
 
@@ -116,7 +125,7 @@ impl HeadlessServer {
             .iter()
             .map(|(_, runtime)| runtime.clone())
             .collect();
-        let manifest = crate::server::handoff::manifest_for(
+        let mut manifest = crate::server::handoff::manifest_for(
             snapshot,
             panes,
             params.expected_protocol,
@@ -124,6 +133,11 @@ impl HeadlessServer {
             self.api_window_title.clone(),
             self.host_shutdown_intent.get(),
         );
+        if !popups.is_empty() {
+            manifest.version = 2;
+            manifest.popups = popups;
+            manifest.popup_owner_tab_id = self.popup_owner_tab_id.clone();
+        }
         let mut import_child = match crate::server::handoff::spawn_handoff_import(
             import_exe.as_deref(),
             &socket_path,

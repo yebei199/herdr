@@ -722,6 +722,7 @@ fn success_response_round_trips() {
             protocol: 6,
             capabilities: Some(ServerCapabilities {
                 live_handoff: true,
+                live_handoff_auxiliary_terminals: false,
                 detached_server_daemon: true,
                 endpoint_protocol_generation: Some(1),
                 surface_interest: true,

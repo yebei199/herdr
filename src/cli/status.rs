@@ -277,6 +277,7 @@ struct ServerStatusJson {
 #[derive(Serialize)]
 struct ServerCapabilitiesJson {
     live_handoff: bool,
+    live_handoff_auxiliary_terminals: bool,
     detached_server_daemon: bool,
     endpoint_protocol_generation: Option<u32>,
     surface_interest: bool,
@@ -324,6 +325,7 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
                 .as_ref()
                 .map(|capabilities| ServerCapabilitiesJson {
                     live_handoff: capabilities.live_handoff,
+                    live_handoff_auxiliary_terminals: capabilities.live_handoff_auxiliary_terminals,
                     detached_server_daemon: capabilities.detached_server_daemon,
                     endpoint_protocol_generation: capabilities.endpoint_protocol_generation,
                     surface_interest: capabilities.surface_interest,
@@ -444,6 +446,7 @@ mod tests {
             protocol: Some(crate::protocol::PROTOCOL_VERSION),
             capabilities: Some(crate::api::schema::ServerCapabilities {
                 live_handoff: true,
+                live_handoff_auxiliary_terminals: false,
                 detached_server_daemon: true,
                 endpoint_protocol_generation: endpoint_generation,
                 surface_interest: true,

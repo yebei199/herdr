@@ -10477,6 +10477,11 @@
             "live_handoff": {
               "type": "boolean"
             },
+            "live_handoff_auxiliary_terminals": {
+              "default": false,
+              "description": "Includes visible popups and hidden floating terminals in a live handoff.",
+              "type": "boolean"
+            },
             "ssh_agent_registration": {
               "default": false,
               "description": "Supports connection-scoped `server.ssh_agent.register` on the local JSON API.",
