@@ -1,0 +1,3 @@
+# Keep the fork's upstream layout independent of host-level formatter settings.
+edition = "2021"
+max_width = 100

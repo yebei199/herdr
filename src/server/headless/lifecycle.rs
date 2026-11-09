@@ -37,14 +37,6 @@ impl HeadlessServer {
                 .unwrap_or_default()
                 .as_nanos()
         );
-        let listener = match crate::server::handoff::bind_listener(&socket_path) {
-            Ok(listener) => listener,
-            Err(err) => {
-                self.handoff_in_progress = false;
-                return Err(err);
-            }
-        };
-
         let mut pane_by_terminal = HashMap::new();
         for ws in &self.app.state.workspaces {
             for tab in &ws.tabs {
@@ -53,6 +45,25 @@ impl HeadlessServer {
                 }
             }
         }
+
+        if self
+            .app
+            .terminal_runtimes
+            .iter()
+            .any(|(id, _)| !pane_by_terminal.contains_key(id))
+        {
+            return Err(io::Error::other(
+                "live handoff cannot yet transfer popup or floating terminals; current server retained",
+            ));
+        }
+
+        let listener = match crate::server::handoff::bind_listener(&socket_path) {
+            Ok(listener) => listener,
+            Err(err) => {
+                self.handoff_in_progress = false;
+                return Err(err);
+            }
+        };
 
         self.handoff_in_progress = true;
         self.disconnect_all_clients_for_handoff();
@@ -196,7 +207,11 @@ impl HeadlessServer {
                 "handoff replacement server did not become ready: {err}"
             )));
         }
-        if let Err(err) = crate::server::handoff::report_committed(&mut stream) {
+        let committed = crate::platform::set_service_main_pid(child_pid)
+            .and_then(|()| crate::server::handoff::report_committed(&mut stream));
+        if let Err(err) = committed {
+            // Restore manager ownership before terminating the failed replacement.
+            crate::platform::set_service_main_pid(std::process::id())?;
             crate::server::handoff::cleanup_failed_import_child(&mut import_child);
             match self.wait_then_restore_public_sockets_after_failed_handoff() {
                 Ok(()) => {

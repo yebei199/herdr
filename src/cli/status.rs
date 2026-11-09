@@ -85,7 +85,7 @@ fn print_full_status(json: bool) -> std::io::Result<i32> {
     if json {
         print_json(&FullStatusJson {
             client: client_status_json(),
-            server: server_status_json(&server),
+            server: server_status_with_pid(&server),
             update: update_status_json(&server),
         })?;
         return Ok(0);
@@ -119,7 +119,7 @@ fn print_full_status(json: bool) -> std::io::Result<i32> {
 fn print_server_status(json: bool) -> std::io::Result<i32> {
     let server = read_server_runtime_status()?;
     if json {
-        print_json(&server_status_json(&server))?;
+        print_json(&server_status_with_pid(&server))?;
         return Ok(0);
     }
     print_server_status_body(&server, "");
@@ -260,6 +260,7 @@ struct ClientStatusJson {
 
 #[derive(Serialize)]
 struct ServerStatusJson {
+    pid: Option<u32>,
     status: &'static str,
     running: bool,
     version: Option<String>,
@@ -314,6 +315,7 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
             protocol,
             capabilities,
         } => ServerStatusJson {
+            pid: None,
             status: "running",
             running: true,
             version: version.clone(),
@@ -340,6 +342,7 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
             server_binary_stale: server_binary_stale_bool(server),
         },
         ServerRuntimeStatus::NotRunning => ServerStatusJson {
+            pid: None,
             status: "not_running",
             running: false,
             version: None,
@@ -357,6 +360,27 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
         status.socket = super::target::socket_label();
         status.session = Some(session);
         status.server_binary_stale = None;
+    }
+    status
+}
+
+fn local_server_pid() -> Option<u32> {
+    if super::target::remote_identity().is_some() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let stream = crate::ipc::connect_local_stream(&api::socket_path()).ok()?;
+        crate::platform::local_stream_peer_pid(&stream)
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+fn server_status_with_pid(server: &ServerRuntimeStatus) -> ServerStatusJson {
+    let mut status = server_status_json(server);
+    if status.running {
+        status.pid = local_server_pid();
     }
     status
 }

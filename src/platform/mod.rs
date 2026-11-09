@@ -6,6 +6,64 @@
 #[cfg(unix)]
 pub(crate) mod ssh_agent;
 
+#[cfg(target_os = "linux")]
+mod service_notify;
+
+/// Keep notification credentials out of pane environments.
+pub(crate) fn initialize_service_notifications() {
+    #[cfg(target_os = "linux")]
+    service_notify::initialize();
+}
+
+/// Pass service ownership to replacement servers only.
+pub(crate) fn configure_service_notifications(command: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    service_notify::configure_child(command);
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
+
+/// Detect an unreachable service manager while handoff can still roll back.
+pub(crate) fn check_service_notifications() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return service_notify::check_connection();
+    #[cfg(not(target_os = "linux"))]
+    Ok(())
+}
+
+/// Adopt before allowing an older exporter to exit; undo an aborted commit.
+pub(crate) fn commit_service_handoff(
+    commit: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return service_notify::commit_handoff(commit);
+    #[cfg(not(target_os = "linux"))]
+    commit()
+}
+
+/// Synchronize the service manager's main PID before a server exits.
+pub(crate) fn set_service_main_pid(pid: u32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return service_notify::set_main_pid(pid);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        Ok(())
+    }
+}
+
+/// Reject incomplete transfers from older exporters before they commit.
+#[cfg(unix)]
+pub(crate) fn validate_handoff_fds(fds: &[std::os::fd::RawFd]) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    return service_notify::validate_handoff_fds(fds);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = fds;
+        Ok(())
+    }
+}
+
 pub(crate) struct HostShutdownMonitor {
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -445,7 +503,8 @@ pub(crate) mod unix_image_files;
 #[cfg(unix)]
 pub(crate) use unix_common::{
     begin_cli_output, end_cli_output, forward_remote_bridge_stdio, ignore_server_hangup,
-    local_stream_peer_description, spawn_server_signal_monitor, RemoteBridgeWake,
+    local_stream_peer_description, local_stream_peer_pid, spawn_server_signal_monitor,
+    RemoteBridgeWake,
 };
 
 mod client_state;

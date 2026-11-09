@@ -2,6 +2,7 @@ use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
 pub fn run_server() -> io::Result<()> {
+    crate::platform::initialize_service_notifications();
     crate::platform::ignore_server_hangup();
     let args: Vec<String> = std::env::args().collect();
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
@@ -90,6 +91,7 @@ pub fn run_server() -> io::Result<()> {
             "herdr server started"
         );
         print_ready_message(&api::socket_path(), &client_socket_path());
+        crate::platform::set_service_main_pid(std::process::id())?;
         server.app.run_plugin_startup_hooks();
 
         server.run().await
@@ -134,6 +136,8 @@ fn take_startup_cwd() -> Option<PathBuf> {
 fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> {
     let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
+    crate::platform::validate_handoff_fds(&received.fds)?;
+    crate::platform::check_service_notifications()?;
     crate::server::handoff::log_import_result(received.manifest.panes.len());
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -193,8 +197,10 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         server
             .host_shutdown_intent
             .set(received.manifest.host_shutdown_intent);
-        crate::server::handoff::report_ready(&mut received.stream)?;
-        crate::server::handoff::wait_committed(&mut received.stream)?;
+        crate::platform::commit_service_handoff(|| {
+            crate::server::handoff::report_ready(&mut received.stream)?;
+            crate::server::handoff::wait_committed(&mut received.stream)
+        })?;
         server.app.assume_handoff_ownership();
         server.app.unpause_handoff_readers();
         server.pending_handoff_repaint_nudge = true;

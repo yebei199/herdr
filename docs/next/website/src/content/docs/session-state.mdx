@@ -116,6 +116,10 @@ If native agent session restore applies to a pane, Herdr resumes the agent sessi
 
 ## Live handoff
 
+On Linux, a systemd-managed server transfers its main PID with a notification barrier before the old server exits. Set `NotifyAccess=all` on the service so a replacement can also adopt ownership when importing from an older server. Pane commands do not inherit the notification socket. The import must receive `NOTIFY_SOCKET`; package-manager integrations upgrading a server that predates this setting must supply it to the replacement. Handoff failure must not fall back to stopping the current server.
+
+This fork rejects handoff while a popup or floating terminal would be omitted. The Linux importer verifies the source PTYs as well, including imports from older exporters. `herdr status server --json` includes the kernel-reported local server `pid` so deployment tools can verify which process owns the endpoint; remote and unsupported platforms return `null`.
+
 Live handoff is for update and remote attach flows that need to replace a running Herdr server. It asks the old server to transfer live panes to the new server, so pane processes can keep running across the server replacement.
 
 Unlike snapshot restore, pane history replay, and native agent session restore, handoff tries to keep the current processes alive rather than reconstructing state after the old server stops.

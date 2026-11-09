@@ -100,6 +100,7 @@ pub(crate) fn spawn_handoff_import(
             .env_remove(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR);
     }
     crate::platform::detach_server_daemon_command(&mut command);
+    crate::platform::configure_service_notifications(&mut command);
     command.spawn().map_err(|err| {
         io::Error::new(
             err.kind(),
