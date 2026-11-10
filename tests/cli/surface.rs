@@ -190,6 +190,93 @@ fn pane_report_metadata_sends_presentation_request() {
 }
 
 #[test]
+fn pane_host_agent_sends_one_declaration() {
+    let base = unique_test_dir();
+    fs::create_dir_all(&base).unwrap();
+    let socket_path = base.join("herdr.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+
+    let server = thread::spawn(move || {
+        let (mut stream, line) = accept_fake_cli_operation(&listener);
+        stream
+            .write_all(br#"{"id":"cli:request","result":{"type":"ok"}}"#)
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        line
+    });
+
+    let run = run_cli(
+        &socket_path,
+        &[
+            "pane",
+            "host-agent",
+            "1-1",
+            "--host-pid=4242",
+            "--agent",
+            "claude",
+            "--hidden",
+            "--waiting",
+            "--seq",
+            "7",
+        ],
+    );
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let request: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+    assert_eq!(request["method"], "pane.host_agent");
+    assert_eq!(
+        request["params"],
+        serde_json::json!({
+            "pane_id": "1-1",
+            "host_pid": 4242,
+            "agent": "claude",
+            "hidden": true,
+            "waiting": true,
+            "seq": 7
+        })
+    );
+
+    cleanup_test_base(&base);
+}
+
+#[test]
+fn pane_host_agent_needs_exactly_one_of_agent_or_none() {
+    let base = unique_test_dir();
+    fs::create_dir_all(&base).unwrap();
+    let socket_path = base.join("missing.sock");
+
+    for args in [
+        &["pane", "host-agent", "1-1", "--host-pid", "1"][..],
+        &[
+            "pane",
+            "host-agent",
+            "1-1",
+            "--host-pid",
+            "1",
+            "--agent",
+            "pi",
+            "--none",
+        ][..],
+    ] {
+        let run = run_cli(&socket_path, args);
+        assert_eq!(run.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&run.stderr)
+                .contains("exactly one of --agent or --none is required"),
+            "stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    cleanup_test_base(&base);
+}
+
+#[test]
 fn pane_report_metadata_rejects_blank_source_before_socket_request() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();

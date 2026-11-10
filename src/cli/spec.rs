@@ -638,6 +638,7 @@ fn pane_command() -> Command {
         .subcommand(report_agent_command())
         .subcommand(report_agent_session_command())
         .subcommand(release_agent_command())
+        .subcommand(host_agent_command())
         .subcommand(report_metadata_command())
 }
 
@@ -683,6 +684,26 @@ fn release_agent_command() -> Command {
         .arg(option("source", "ID").required(true))
         .arg(option("agent", "LABEL").required(true))
         .arg(option("seq", "N"))
+}
+
+fn host_agent_command() -> Command {
+    Command::new("host-agent")
+        .about("Declare the agent a foreground host process runs out of Herdr's sight")
+        .arg(required("pane_id", "PANE_ID"))
+        .arg(option("host-pid", "PID").required(true))
+        .arg(option("agent", "LABEL"))
+        .arg(flag("none").help("The host's agent has exited"))
+        .group(
+            ArgGroup::new("declared")
+                .args(["agent", "none"])
+                .required(true),
+        )
+        .arg(flag("hidden").help("The pane shows the host, not the agent"))
+        .arg(flag("waiting").help("The agent waits for the user"))
+        .arg(option("seq", "N"))
+        .after_help(
+            "The declaration replaces foreground process detection for the pane until the host exits; the host exiting ends the agent. --hidden reads state from the terminal title only and refuses agent input.",
+        )
 }
 
 fn report_metadata_command() -> Command {

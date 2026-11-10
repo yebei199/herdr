@@ -31,6 +31,61 @@ pub(crate) struct HandoffRuntimeState {
     pub initial_history_ansi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<crate::terminal::state::HandoffAgentState>,
+    /// Absent when the source server predates host claims or the pane has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_agent: Option<HandoffHostAgent>,
+}
+
+/// A pane's host claim (`pane.host_agent`), carried so the agent keeps its
+/// identity across the replacement.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HandoffHostAgent {
+    pub host_pid: u32,
+    pub host_start_token: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub waiting: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
+#[cfg(unix)]
+impl HandoffHostAgent {
+    pub fn from_claim(claim: crate::pane::HostAgentClaim) -> Self {
+        Self {
+            host_pid: claim.host.pid,
+            host_start_token: claim.host.start_token,
+            agent: claim
+                .agent
+                .map(|agent| crate::detect::agent_label(agent).to_string()),
+            hidden: claim.hidden,
+            waiting: claim.waiting,
+            seq: claim.seq,
+        }
+    }
+
+    /// `None` when the claimed agent is unknown to this build; the pane then
+    /// falls back to process probing.
+    pub fn claim(self) -> Option<crate::pane::HostAgentClaim> {
+        let agent = match self.agent.as_deref() {
+            Some(label) => Some(crate::detect::parse_agent_label(label)?),
+            None => None,
+        };
+        Some(crate::pane::HostAgentClaim {
+            host: crate::pane::HostProcess {
+                pid: self.host_pid,
+                start_token: self.host_start_token,
+            },
+            agent,
+            hidden: self.hidden,
+            waiting: self.waiting,
+            seq: self.seq,
+        })
+    }
 }
 
 #[cfg(unix)]

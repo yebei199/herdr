@@ -327,6 +327,10 @@ pub fn detect_agent_with_osc(
     )
 }
 
+pub fn detect_title_only(agent: Agent, osc_title: &str, osc_progress: &str) -> AgentDetection {
+    manifest::detect_title_only(agent, osc_title, osc_progress)
+}
+
 pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> bool {
     matches!(
         (source, agent_label),

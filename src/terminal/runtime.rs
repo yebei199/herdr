@@ -253,6 +253,18 @@ impl TerminalRuntime {
         self.0.set_self_reported_agent_active(active);
     }
 
+    pub(crate) fn host_agent_claim(&self) -> Option<crate::pane::HostAgentClaim> {
+        self.0.host_agent_claim()
+    }
+
+    pub(crate) fn declare_host_agent(&self, claim: crate::pane::HostAgentClaim) -> bool {
+        self.0.declare_host_agent(claim)
+    }
+
+    pub(crate) fn foreground_host_process(&self, pid: u32) -> Option<crate::pane::HostProcess> {
+        self.0.foreground_host_process(pid)
+    }
+
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }

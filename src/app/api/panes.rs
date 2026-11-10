@@ -4,10 +4,10 @@ use crate::api::schema::{
     EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
     PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
     PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
-    PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
-    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
-    PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
+    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneHostAgentParams, PaneInfo,
+    PaneInputSetParams, PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot,
+    PaneLayoutSplit, PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason,
+    PaneMoveResult, PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
@@ -1948,6 +1948,66 @@ impl App {
             seq: params.seq,
         });
 
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_pane_host_agent(
+        &mut self,
+        id: String,
+        params: PaneHostAgentParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let agent = match params.agent.as_deref() {
+            Some(label) => {
+                match crate::detect::parse_agent_label(label.trim()) {
+                    Some(agent) => Some(agent),
+                    None => {
+                        return encode_error(
+                        id,
+                        "invalid_agent",
+                        format!("unknown agent {label:?}; a host can declare only agents Herdr detects"),
+                    );
+                    }
+                }
+            }
+            None => None,
+        };
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(host) = runtime.foreground_host_process(params.host_pid) else {
+            return encode_error(
+                id,
+                "host_not_foreground",
+                format!(
+                    "process {} is not in the foreground job of pane {}",
+                    params.host_pid, params.pane_id
+                ),
+            );
+        };
+        let declared = runtime.declare_host_agent(crate::pane::HostAgentClaim {
+            host,
+            agent,
+            hidden: agent.is_some() && params.hidden,
+            waiting: agent.is_some() && params.waiting,
+            seq: params.seq,
+        });
+        // Agent reports that follow at once must find the pane already
+        // identified; detection confirms on its next tick.
+        if let Some(agent) = agent.filter(|_| declared) {
+            if self
+                .pane_terminal(ws_idx, pane_id)
+                .is_some_and(|terminal| terminal.detected_agent.is_none())
+            {
+                self.handle_internal_event(crate::events::AppEvent::AgentProcessDetected {
+                    pane_id,
+                    agent,
+                    observed_at: std::time::Instant::now(),
+                });
+            }
+        }
         encode_success(id, ResponseResult::Ok {})
     }
 

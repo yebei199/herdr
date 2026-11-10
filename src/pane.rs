@@ -27,6 +27,7 @@ use crate::render_signal::RenderSignal;
 mod agent_detection;
 mod background_agent;
 mod cursor;
+mod host_agent;
 mod input;
 mod kitty_keyboard;
 mod osc;
@@ -42,6 +43,8 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
+use self::host_agent::{host_agent_step, HostAgentStep, HostAgentTracker};
+pub(crate) use self::host_agent::{HostAgentCell, HostAgentClaim, HostProcess};
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
@@ -934,6 +937,7 @@ fn spawn_basic_detection_task(
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     self_reported_agent_active: Arc<AtomicBool>,
+    host_agent: Arc<HostAgentCell>,
     state_events: mpsc::Sender<AppEvent>,
 ) -> (
     tokio::task::AbortHandle,
@@ -967,6 +971,7 @@ fn spawn_basic_detection_task(
         let mut last_codex_prompt_ready = false;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
+        let mut host_tracker = HostAgentTracker::default();
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -976,6 +981,7 @@ fn spawn_basic_detection_task(
             };
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {}
+                _ = host_agent.changed() => {}
                 _ = detect_reset.notified() => {
                     publish_codex_prompt_observation(
                         &state_events, pane_id, Some(Agent::Codex), "", None, false,
@@ -1030,7 +1036,26 @@ fn spawn_basic_detection_task(
                 .flatten();
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
-            let should_check_process = pid > 0 && {
+            let host_tick = host_tracker.observe(
+                &host_agent,
+                pid,
+                foreground_pgid,
+                &PlatformAgentProcesses,
+                now,
+            );
+            if host_tick.as_ref().is_some_and(|tick| tick.changed) {
+                last_screen_scan_detection_content_seq = None;
+            }
+            let host_step = host_tick.as_ref().map_or(HostAgentStep::Probe, |tick| {
+                host_agent_step(
+                    &tick.claim,
+                    tick.presence,
+                    host_tracker.bound(),
+                    agent,
+                    foreground_shell_exit_reported,
+                )
+            });
+            let should_check_process = pid > 0 && host_step == HostAgentStep::Probe && {
                 let process_probe_input = ProcessProbeInput {
                     current_agent: agent,
                     suppressed_agent,
@@ -1050,6 +1075,30 @@ fn spawn_basic_detection_task(
                 )
             };
 
+            let mut identity_update = None;
+            if let (
+                HostAgentStep::Decide {
+                    action,
+                    agent: claimed,
+                },
+                Some(tick),
+            ) = (host_step, host_tick.as_ref())
+            {
+                let previous_agent = agent_presence.current_agent();
+                let changed = apply_foreground_shell_agent_action(
+                    &mut agent_presence,
+                    action,
+                    previous_agent,
+                    claimed,
+                    &mut pending_foreground_shell_clear,
+                    &mut foreground_shell_exit_reported,
+                );
+                if host_tracker.settle(&host_agent, tick, action, agent_presence.current_agent()) {
+                    has_process_probe = false;
+                    agent_job = AgentJobTracker::default();
+                }
+                identity_update = Some((previous_agent, action, changed));
+            }
             if should_check_process {
                 last_process_check = now;
                 let had_process_probe = has_process_probe;
@@ -1093,36 +1142,36 @@ fn spawn_basic_detection_task(
                 {
                     acquisition_started_at = Some(now);
                 }
-                if changed {
-                    agent = agent_presence.current_agent();
-                    agent_changed = previous_agent != agent
-                        || foreground_action
-                            == ForegroundShellAgentAction::ReportReplacementProcess;
-                    if agent_changed {
-                        pending_idle.clear();
-                        last_codex_prompt_ready = false;
-                        last_screen_scan_detection_content_seq = None;
-                        // A replacement agent must not inherit OSC evidence
-                        // from the previous process; a first acquisition keeps
-                        // the evidence its own process already emitted.
-                        clear_osc_evidence_for_agent_transition(&terminal, previous_agent);
-                        if let Some(agent) = agent {
-                            agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
-                            state = AgentState::Unknown;
-                            last_visible_idle = false;
-                            last_visible_blocker = false;
-                            last_visible_working = false;
-                            last_visible_signal_refresh = None;
-                            publish_agent_process_detected_event(
-                                state_events.clone(),
-                                pane_id,
-                                agent,
-                                now,
-                            )
-                            .await;
-                        } else {
-                            agent_startup_grace_until = None;
-                        }
+                identity_update = Some((previous_agent, foreground_action, changed));
+            }
+            if let Some((previous_agent, foreground_action, true)) = identity_update {
+                agent = agent_presence.current_agent();
+                agent_changed = previous_agent != agent
+                    || foreground_action == ForegroundShellAgentAction::ReportReplacementProcess;
+                if agent_changed {
+                    pending_idle.clear();
+                    last_codex_prompt_ready = false;
+                    last_screen_scan_detection_content_seq = None;
+                    // A replacement agent must not inherit OSC evidence
+                    // from the previous process; a first acquisition keeps
+                    // the evidence its own process already emitted.
+                    clear_osc_evidence_for_agent_transition(&terminal, previous_agent);
+                    if let Some(agent) = agent {
+                        agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
+                        state = AgentState::Unknown;
+                        last_visible_idle = false;
+                        last_visible_blocker = false;
+                        last_visible_working = false;
+                        last_visible_signal_refresh = None;
+                        publish_agent_process_detected_event(
+                            state_events.clone(),
+                            pane_id,
+                            agent,
+                            now,
+                        )
+                        .await;
+                    } else {
+                        agent_startup_grace_until = None;
                     }
                 }
             }
@@ -1130,10 +1179,16 @@ fn spawn_basic_detection_task(
             let process_exited = pending_foreground_shell_clear
                 && agent.is_some()
                 && !foreground_shell_exit_reported;
+            let host_screen_claim = host_tick.as_ref().and_then(|tick| tick.screen_claim(agent));
 
             // The visible screen belongs to another job while the agent waits
             // in the background, so it says nothing about the agent's state.
-            if (lifecycle_authority_active || agent_job.in_background()) && !process_exited {
+            if (lifecycle_authority_active
+                || agent_job.in_background()
+                || host_step == HostAgentStep::Hold
+                || host_tracker.screen_settling(now))
+                && !process_exited
+            {
                 pending_idle.clear();
                 continue;
             }
@@ -1178,7 +1233,8 @@ fn spawn_basic_detection_task(
             last_screen_scan_detection_content_seq = current_detection_content_seq;
             let osc_title = terminal.agent_osc_title();
             let osc_progress = terminal.agent_osc_progress();
-            let screen_detection = detection_update_for_publish_with_osc(
+            let screen_detection = host_agent::screen_detection(
+                host_screen_claim,
                 agent,
                 content,
                 &osc_title,
@@ -1513,6 +1569,7 @@ pub struct PaneRuntime {
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     self_reported_agent_active: Arc<AtomicBool>,
+    host_agent: Arc<HostAgentCell>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
     preserve_processes_on_drop: bool,
@@ -2312,6 +2369,10 @@ impl PaneRuntime {
             terminal_title: self.terminal_title(),
             initial_history_ansi: None,
             agent_state: None,
+            host_agent: self
+                .host_agent
+                .get()
+                .map(crate::handoff_runtime::HandoffHostAgent::from_claim),
         }
     }
 
@@ -2524,6 +2585,7 @@ impl PaneRuntime {
             terminal_title,
             initial_history_ansi,
             agent_state: _,
+            host_agent,
         } = state;
         let pane_id = PaneId::from_raw(pane_id);
         use std::os::fd::FromRawFd;
@@ -2649,6 +2711,9 @@ impl PaneRuntime {
 
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
+        let host_agent = Arc::new(HostAgentCell::with_claim(
+            host_agent.and_then(crate::handoff_runtime::HandoffHostAgent::claim),
+        ));
         let (detect_handle, detect_reset_notify, pending_release) = if agent_detection_disabled {
             (None, Arc::new(Notify::new()), Arc::new(Mutex::new(None)))
         } else {
@@ -2660,6 +2725,7 @@ impl PaneRuntime {
                 detection_content_seq.clone(),
                 full_lifecycle_authority_active.clone(),
                 self_reported_agent_active.clone(),
+                host_agent.clone(),
                 events,
             );
             (Some(handle), reset, pending)
@@ -2681,6 +2747,7 @@ impl PaneRuntime {
             detection_content_seq,
             full_lifecycle_authority_active,
             self_reported_agent_active,
+            host_agent,
             detect_reset_notify,
             pending_release,
             preserve_processes_on_drop: true,
@@ -2741,6 +2808,7 @@ impl PaneRuntime {
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
+        let host_agent = Arc::new(HostAgentCell::default());
         {
             let child_pid = child_pid.clone();
             let child_wait_completed = child_wait_completed.clone();
@@ -2866,6 +2934,7 @@ impl PaneRuntime {
             let detection_content_seq = detection_content_seq.clone();
             let full_lifecycle_authority_active_for_task = full_lifecycle_authority_active.clone();
             let self_reported_agent_active_for_task = self_reported_agent_active.clone();
+            let host_agent = host_agent.clone();
             let render_notify = render_notify.clone();
             let render_dirty = render_dirty.clone();
             let detect_reset_notify = Arc::new(Notify::new());
@@ -2899,6 +2968,7 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
+                let mut host_tracker = HostAgentTracker::default();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -2918,6 +2988,7 @@ impl PaneRuntime {
                     };
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
+                        _ = host_agent.changed() => {}
                         _ = detect_reset.notified() => {
                             publish_codex_prompt_observation(
                                 &state_events, pane_id, Some(Agent::Codex), "", None, false,
@@ -3006,7 +3077,26 @@ impl PaneRuntime {
                     }
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
-                    let should_check_process = pid > 0 && {
+                    let host_tick = host_tracker.observe(
+                        &host_agent,
+                        pid,
+                        foreground_pgid,
+                        &PlatformAgentProcesses,
+                        now,
+                    );
+                    if host_tick.as_ref().is_some_and(|tick| tick.changed) {
+                        last_screen_scan_detection_content_seq = None;
+                    }
+                    let host_step = host_tick.as_ref().map_or(HostAgentStep::Probe, |tick| {
+                        host_agent_step(
+                            &tick.claim,
+                            tick.presence,
+                            host_tracker.bound(),
+                            agent,
+                            foreground_shell_exit_reported,
+                        )
+                    });
+                    let should_check_process = pid > 0 && host_step == HostAgentStep::Probe && {
                         let process_probe_input = ProcessProbeInput {
                             foreground_pgid,
                             ..process_probe_input
@@ -3019,115 +3109,144 @@ impl PaneRuntime {
                     };
 
                     let mut agent_changed = false;
+                    let mut identity_update = None;
+                    if let (
+                        HostAgentStep::Decide {
+                            action,
+                            agent: claimed,
+                        },
+                        Some(tick),
+                    ) = (host_step, host_tick.as_ref())
+                    {
+                        let previous_agent = agent_presence.current_agent();
+                        let changed = apply_foreground_shell_agent_action(
+                            &mut agent_presence,
+                            action,
+                            previous_agent,
+                            claimed,
+                            &mut pending_foreground_shell_clear,
+                            &mut foreground_shell_exit_reported,
+                        );
+                        if host_tracker.settle(
+                            &host_agent,
+                            tick,
+                            action,
+                            agent_presence.current_agent(),
+                        ) {
+                            has_process_probe = false;
+                            agent_job = AgentJobTracker::default();
+                        }
+                        pending_restore_probe = false;
+                        identity_update = Some((previous_agent, action, changed, None, None));
+                    }
                     if should_check_process {
                         last_process_check = now;
                         let had_process_probe = has_process_probe;
                         has_process_probe = true;
-                        if pid > 0 {
-                            let probe = probe_foreground_process(pid, foreground_pgid);
-                            let process_name = probe.process_name;
-                            let process_group_id = probe.process_group_id;
-                            let tracked_process_group_id = process_group_for_change_tracking(
-                                foreground_pgid,
-                                process_group_id,
-                            );
-                            let foreground_is_pane_shell = probe.foreground_is_pane_shell;
-                            let mut new_agent = probe.agent;
+                        let probe = probe_foreground_process(pid, foreground_pgid);
+                        let process_group_id = probe.process_group_id;
+                        let tracked_process_group_id =
+                            process_group_for_change_tracking(foreground_pgid, process_group_id);
+                        let foreground_is_pane_shell = probe.foreground_is_pane_shell;
+                        let mut new_agent = probe.agent;
 
-                            if let Some(suppressed_agent) = suppressed_agent {
-                                if new_agent == Some(suppressed_agent) {
-                                    new_agent = None;
-                                } else if let Ok(mut pending_release) =
-                                    pending_release_for_task.lock()
-                                {
-                                    *pending_release = None;
-                                }
-                            }
-
-                            let previous_agent = agent_presence.current_agent();
-                            let (foreground_action, changed) = observe_foreground_agent(
-                                &mut agent_presence,
-                                &mut agent_job,
-                                &mut pending_foreground_shell_clear,
-                                &mut foreground_shell_exit_reported,
-                                ForegroundAgentObservation {
-                                    shell_pid: pid,
-                                    agent: new_agent,
-                                    agent_pid: new_agent.and(probe.agent_pid),
-                                    process_group_id,
-                                    foreground_is_pane_shell,
-                                },
-                                &PlatformAgentProcesses,
-                                pane_id,
-                            );
-                            last_foreground_pgid = tracked_process_group_id;
-                            if new_agent.is_some() {
-                                acquisition_started_at = None;
-                                last_content_change_at = None;
-                            } else if agent_presence.current_agent().is_none()
-                                && had_process_probe
-                                && process_group_changed
+                        if let Some(suppressed_agent) = suppressed_agent {
+                            if new_agent == Some(suppressed_agent) {
+                                new_agent = None;
+                            } else if let Ok(mut pending_release) = pending_release_for_task.lock()
                             {
-                                acquisition_started_at = Some(now);
-                            }
-                            pending_restore_probe = false;
-                            if changed {
-                                agent = agent_presence.current_agent();
-                                if agent != previous_agent
-                                    || foreground_action
-                                        == ForegroundShellAgentAction::ReportReplacementProcess
-                                {
-                                    pending_idle.clear();
-                                    last_codex_prompt_ready = false;
-                                    last_screen_scan_detection_content_seq = None;
-                                    // A replacement agent must not inherit OSC
-                                    // evidence from the previous process; a first
-                                    // acquisition keeps the evidence its own
-                                    // process already emitted.
-                                    clear_osc_evidence_for_agent_transition(
-                                        &terminal,
-                                        previous_agent,
-                                    );
-                                    if let Some(agent) = agent {
-                                        agent_startup_grace_until =
-                                            Some(now + AGENT_STARTUP_GRACE_WINDOW);
-                                        state = AgentState::Unknown;
-                                        last_visible_idle = false;
-                                        last_visible_blocker = false;
-                                        last_visible_working = false;
-                                        last_visible_signal_refresh = None;
-                                        publish_agent_process_detected_event(
-                                            state_events.clone(),
-                                            pane_id,
-                                            agent,
-                                            now,
-                                        )
-                                        .await;
-                                    } else {
-                                        agent_startup_grace_until = None;
-                                    }
-                                }
-                                if let Some(process_name) = process_name {
-                                    info!(
-                                        pane = pane_id.raw(),
-                                        previous_agent = ?previous_agent,
-                                        ?agent,
-                                        process = %process_name,
-                                        pgid = ?process_group_id,
-                                        "agent changed"
-                                    );
-                                } else {
-                                    info!(
-                                        pane = pane_id.raw(),
-                                        previous_agent = ?previous_agent,
-                                        ?agent,
-                                        pgid = ?process_group_id,
-                                        "agent changed"
-                                    );
-                                }
-                                agent_changed = true;
+                                *pending_release = None;
                             }
                         }
+
+                        let previous_agent = agent_presence.current_agent();
+                        let (foreground_action, changed) = observe_foreground_agent(
+                            &mut agent_presence,
+                            &mut agent_job,
+                            &mut pending_foreground_shell_clear,
+                            &mut foreground_shell_exit_reported,
+                            ForegroundAgentObservation {
+                                shell_pid: pid,
+                                agent: new_agent,
+                                agent_pid: new_agent.and(probe.agent_pid),
+                                process_group_id,
+                                foreground_is_pane_shell,
+                            },
+                            &PlatformAgentProcesses,
+                            pane_id,
+                        );
+                        last_foreground_pgid = tracked_process_group_id;
+                        if new_agent.is_some() {
+                            acquisition_started_at = None;
+                            last_content_change_at = None;
+                        } else if agent_presence.current_agent().is_none()
+                            && had_process_probe
+                            && process_group_changed
+                        {
+                            acquisition_started_at = Some(now);
+                        }
+                        pending_restore_probe = false;
+                        identity_update = Some((
+                            previous_agent,
+                            foreground_action,
+                            changed,
+                            probe.process_name,
+                            process_group_id,
+                        ));
+                    }
+                    if let Some((previous_agent, foreground_action, true, process_name, pgid)) =
+                        identity_update
+                    {
+                        agent = agent_presence.current_agent();
+                        if agent != previous_agent
+                            || foreground_action
+                                == ForegroundShellAgentAction::ReportReplacementProcess
+                        {
+                            pending_idle.clear();
+                            last_codex_prompt_ready = false;
+                            last_screen_scan_detection_content_seq = None;
+                            // A replacement agent must not inherit OSC
+                            // evidence from the previous process; a first
+                            // acquisition keeps the evidence its own
+                            // process already emitted.
+                            clear_osc_evidence_for_agent_transition(&terminal, previous_agent);
+                            if let Some(agent) = agent {
+                                agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
+                                state = AgentState::Unknown;
+                                last_visible_idle = false;
+                                last_visible_blocker = false;
+                                last_visible_working = false;
+                                last_visible_signal_refresh = None;
+                                publish_agent_process_detected_event(
+                                    state_events.clone(),
+                                    pane_id,
+                                    agent,
+                                    now,
+                                )
+                                .await;
+                            } else {
+                                agent_startup_grace_until = None;
+                            }
+                        }
+                        if let Some(process_name) = process_name {
+                            info!(
+                                pane = pane_id.raw(),
+                                previous_agent = ?previous_agent,
+                                ?agent,
+                                process = %process_name,
+                                pgid = ?pgid,
+                                "agent changed"
+                            );
+                        } else {
+                            info!(
+                                pane = pane_id.raw(),
+                                previous_agent = ?previous_agent,
+                                ?agent,
+                                pgid = ?pgid,
+                                "agent changed"
+                            );
+                        }
+                        agent_changed = true;
                     }
 
                     let pid = child_pid.load(Ordering::Acquire);
@@ -3142,10 +3261,16 @@ impl PaneRuntime {
                     let process_exited = pending_foreground_shell_clear
                         && agent.is_some()
                         && !foreground_shell_exit_reported;
+                    let host_screen_claim =
+                        host_tick.as_ref().and_then(|tick| tick.screen_claim(agent));
 
                     // The visible screen belongs to another job while the agent
                     // waits in the background, so it says nothing about its state.
-                    if (lifecycle_authority_active || agent_job.in_background()) && !process_exited
+                    if (lifecycle_authority_active
+                        || agent_job.in_background()
+                        || host_step == HostAgentStep::Hold
+                        || host_tracker.screen_settling(now))
+                        && !process_exited
                     {
                         pending_idle.clear();
                         continue;
@@ -3193,7 +3318,8 @@ impl PaneRuntime {
                     last_screen_scan_detection_content_seq = current_detection_content_seq;
                     let osc_title = terminal.agent_osc_title();
                     let osc_progress = terminal.agent_osc_progress();
-                    let screen_detection = detection_update_for_publish_with_osc(
+                    let screen_detection = host_agent::screen_detection(
+                        host_screen_claim,
                         agent,
                         content,
                         &osc_title,
@@ -3294,6 +3420,7 @@ impl PaneRuntime {
             detection_content_seq,
             full_lifecycle_authority_active,
             self_reported_agent_active,
+            host_agent,
             detect_reset_notify,
             pending_release,
             preserve_processes_on_drop: false,
@@ -3324,6 +3451,24 @@ impl PaneRuntime {
     pub fn set_self_reported_agent_active(&self, active: bool) {
         self.self_reported_agent_active
             .store(active, Ordering::Release);
+    }
+
+    pub(crate) fn host_agent_claim(&self) -> Option<HostAgentClaim> {
+        self.host_agent.get()
+    }
+
+    /// Returns false when the claim is stale (see `HostAgentCell::declare`).
+    pub(crate) fn declare_host_agent(&self, claim: HostAgentClaim) -> bool {
+        self.host_agent.declare(claim)
+    }
+
+    /// `pid` as a host process when it leads or joins the pane's foreground job.
+    pub(crate) fn foreground_host_process(&self, pid: u32) -> Option<HostProcess> {
+        let shell_pid = self.child_pid()?;
+        let start_token = crate::platform::process_start_token(pid)?;
+        let group = crate::platform::live_pane_process_group(shell_pid, pid, start_token)?;
+        (Some(group) == crate::detect::foreground_process_group_id(shell_pid))
+            .then_some(HostProcess { pid, start_token })
     }
 
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
@@ -3940,6 +4085,7 @@ impl PaneRuntime {
             self.detection_content_seq.clone(),
             self.full_lifecycle_authority_active.clone(),
             self.self_reported_agent_active.clone(),
+            self.host_agent.clone(),
             events,
         );
         self.detect_handle = Some(handle);
@@ -4087,6 +4233,7 @@ impl PaneRuntime {
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 self_reported_agent_active: Arc::new(AtomicBool::new(false)),
+                host_agent: Arc::new(HostAgentCell::default()),
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
                 preserve_processes_on_drop: true,
@@ -4234,6 +4381,184 @@ mod tests {
             runtime.test_wait_for_detection_reads(reads + 1).await;
         }
         assert_eq!(runtime.content_seq(), revision);
+        runtime.shutdown();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn spawn_host_test_runtime(command: &str) -> (PaneRuntime, mpsc::Receiver<AppEvent>) {
+        let (events, event_rx) = mpsc::channel(64);
+        let runtime = PaneRuntime::spawn_shell_command(
+            PaneId::from_raw(43),
+            4,
+            20,
+            std::env::temp_dir(),
+            command,
+            &PaneLaunchEnv::default(),
+            AgentDetection::Enabled,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        (runtime, event_rx)
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn foreground_host(runtime: &PaneRuntime, pid: impl Fn() -> Option<u32>) -> HostProcess {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(host) = pid().and_then(|pid| runtime.foreground_host_process(pid)) {
+                    return host;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host process should join the pane's foreground job")
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn next_agent_event(
+        events: &mut mpsc::Receiver<AppEvent>,
+        within: std::time::Duration,
+        wanted: impl Fn(&AppEvent) -> bool,
+    ) -> AppEvent {
+        tokio::time::timeout(within, async {
+            loop {
+                let event = events.recv().await.expect("detection keeps running");
+                if wanted(&event) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("detection should publish the expected event")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn host_claim(host: HostProcess, agent: Option<Agent>, seq: u64) -> HostAgentClaim {
+        HostAgentClaim {
+            host,
+            agent,
+            hidden: false,
+            waiting: false,
+            seq: Some(seq),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_exit_of(event: &AppEvent, expected: Agent) -> bool {
+        matches!(
+            event,
+            AppEvent::StateChanged {
+                agent: Some(agent),
+                state: AgentState::Idle,
+                process_exited: true,
+                ..
+            } if *agent == expected
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn host_claim_acquires_exits_and_switches_without_resetting_detection() {
+        let (runtime, mut events) = spawn_host_test_runtime("exec sleep 30");
+        let host = foreground_host(&runtime, || runtime.child_pid()).await;
+        let reset = runtime.agent_detection_reset_notify_for_test();
+        let fast = std::time::Duration::from_millis(1500);
+
+        assert!(runtime.declare_host_agent(host_claim(host, Some(Agent::Codex), 1)));
+        next_agent_event(&mut events, fast, |event| {
+            matches!(
+                event,
+                AppEvent::AgentProcessDetected {
+                    agent: Agent::Codex,
+                    ..
+                }
+            )
+        })
+        .await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), reset.notified())
+                .await
+                .is_err(),
+            "a declaration wakes detection without resetting it"
+        );
+
+        // Another agent in the same host: the first one exits before the second starts.
+        assert!(runtime.declare_host_agent(host_claim(host, Some(Agent::Pi), 2)));
+        let event = next_agent_event(&mut events, fast, |event| {
+            is_exit_of(event, Agent::Codex)
+                || matches!(event, AppEvent::AgentProcessDetected { .. })
+        })
+        .await;
+        assert!(is_exit_of(&event, Agent::Codex), "{event:?}");
+        next_agent_event(&mut events, fast, |event| {
+            matches!(
+                event,
+                AppEvent::AgentProcessDetected {
+                    agent: Agent::Pi,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        // --none while the host stays in front exits at once, not after missed probes.
+        assert!(runtime.declare_host_agent(host_claim(host, None, 3)));
+        next_agent_event(&mut events, fast, |event| is_exit_of(event, Agent::Pi)).await;
+        next_agent_event(&mut events, fast, |event| {
+            matches!(event, AppEvent::StateChanged { agent: None, .. })
+        })
+        .await;
+        assert!(!runtime.declare_host_agent(host_claim(host, Some(Agent::Pi), 3)));
+        runtime.shutdown();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn host_exit_ends_its_agent_and_returns_the_pane_to_probing() {
+        let (mut runtime, _spawned_events) = spawn_host_test_runtime("sleep 30; exec sleep 60");
+        let shell = runtime.child_pid().expect("pane shell");
+        let host = foreground_host(&runtime, || {
+            std::fs::read_to_string(format!("/proc/{shell}/task/{shell}/children"))
+                .ok()?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .await;
+        // After a live handoff the imported pane runs the basic detection task.
+        let mut events = runtime.test_start_basic_detection();
+        let fast = std::time::Duration::from_millis(1500);
+        assert!(runtime.declare_host_agent(HostAgentClaim {
+            hidden: true,
+            ..host_claim(host, Some(Agent::Claude), 1)
+        }));
+        next_agent_event(&mut events, fast, |event| {
+            matches!(
+                event,
+                AppEvent::AgentProcessDetected {
+                    agent: Agent::Claude,
+                    ..
+                }
+            )
+        })
+        .await;
+
+        assert_eq!(unsafe { libc::kill(host.pid as i32, libc::SIGKILL) }, 0);
+        next_agent_event(&mut events, fast, |event| is_exit_of(event, Agent::Claude)).await;
+        tokio::time::timeout(fast, async {
+            while runtime.host_agent_claim().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a gone host's claim is retired after its agent exits");
         runtime.shutdown();
     }
 
@@ -5423,6 +5748,7 @@ mod tests {
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let runtime = PaneRuntime {
             self_reported_agent_active: Arc::new(AtomicBool::new(false)),
+            host_agent: Arc::new(HostAgentCell::default()),
             cwd_process_exited: Arc::new(AtomicBool::new(false)),
             persistence_cwd: Mutex::new(None),
             pane_id,
@@ -5463,6 +5789,7 @@ mod tests {
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let runtime = PaneRuntime {
             self_reported_agent_active: Arc::new(AtomicBool::new(false)),
+            host_agent: Arc::new(HostAgentCell::default()),
             cwd_process_exited: Arc::new(AtomicBool::new(false)),
             persistence_cwd: Mutex::new(None),
             pane_id,

@@ -439,7 +439,22 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
+/// A host shows itself instead of its agent, so input would reach the host.
+pub(super) fn runtime_hides_agent(
+    runtime: &crate::terminal::TerminalRuntime,
+    expected: crate::detect::Agent,
+) -> bool {
+    runtime
+        .host_agent_claim()
+        .is_some_and(|claim| claim.hidden && claim.agent == Some(expected))
+}
+
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
+    if let Some(claim) = runtime.host_agent_claim() {
+        if runtime.foreground_host_process(claim.host.pid) == Some(claim.host) {
+            return claim.agent;
+        }
+    }
     let job = crate::detect::foreground_job(runtime.child_pid()?)?;
     crate::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)

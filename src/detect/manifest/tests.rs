@@ -572,6 +572,61 @@ regex = ['^progress-marker$']
 }
 
 #[test]
+fn title_only_detection_ignores_screen_rules_and_has_no_idle_fallback() {
+    with_manifest_dirs("title-only", || {
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "screen"
+state = "blocked"
+priority = 50
+region = "whole_recent"
+regex = ['^']
+
+[[rules]]
+id = "title-working"
+state = "working"
+priority = 20
+region = "osc_title"
+regex = ['^spin']
+
+[[rules]]
+id = "title-idle"
+state = "idle"
+priority = 10
+region = "osc_title"
+visible_idle = true
+regex = ['^star']
+
+[[rules]]
+id = "progress"
+state = "blocked"
+priority = 30
+region = "osc_progress"
+visible_blocker = true
+regex = ['^ask$']
+"#,
+        ));
+        let cases = [
+            ("spin task", "", AgentState::Working, false, false),
+            ("star task", "", AgentState::Idle, true, false),
+            ("star task", "ask", AgentState::Blocked, false, true),
+            ("plain", "", AgentState::Unknown, false, false),
+        ];
+        for (title, progress, state, visible_idle, visible_blocker) in cases {
+            let detection = detect_title_only(Agent::Codex, title, progress);
+            assert_eq!(detection.state, state, "title {title:?}");
+            assert_eq!(detection.visible_idle, visible_idle, "title {title:?}");
+            assert_eq!(
+                detection.visible_blocker, visible_blocker,
+                "title {title:?}"
+            );
+            assert!(!detection.skip_state_update);
+        }
+    });
+}
+
+#[test]
 fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
     with_manifest_dirs("skip-rule", || {
         write_local_codex(&rules_manifest(

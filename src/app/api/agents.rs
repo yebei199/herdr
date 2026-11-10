@@ -184,6 +184,9 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return Err(agent_not_found(id, &params.target));
         };
+        if super::super::agents::runtime_hides_agent(runtime, expected_agent) {
+            return Err(agent_hidden(id, &params.target));
+        }
         if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
             return Err(encode_error(
                 id,
@@ -408,6 +411,9 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
+        if super::super::agents::runtime_hides_agent(runtime, expected_agent) {
+            return agent_hidden(id, &params.target);
+        }
         if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
             return agent_not_ready(id, &params.target);
         }
@@ -432,6 +438,14 @@ struct ValidatedAgentPrompt {
     pane_id: crate::layout::PaneId,
     expected_agent: crate::detect::Agent,
     agent: crate::api::schema::AgentInfo,
+}
+
+fn agent_hidden(id: String, target: &str) -> String {
+    encode_error(
+        id,
+        "agent_hidden",
+        format!("agent {target} is hidden behind its host; input would reach the host instead"),
+    )
 }
 
 fn agent_not_ready(id: String, target: &str) -> String {
@@ -813,6 +827,108 @@ mod tests {
             Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
         );
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
+    }
+
+    #[tokio::test]
+    async fn agent_input_is_refused_while_a_host_hides_the_agent() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let claim = crate::pane::HostAgentClaim {
+            host: crate::pane::HostProcess {
+                pid: 4242,
+                start_token: 1,
+            },
+            agent: Some(Agent::Pi),
+            hidden: true,
+            waiting: false,
+            seq: Some(1),
+        };
+        assert!(runtime.declare_host_agent(claim));
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let keys = app.handle_agent_send_keys(
+            "req-keys".into(),
+            AgentSendKeysParams {
+                target: "reviewer".into(),
+                keys: vec!["enter".into()],
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&keys).unwrap();
+        assert_eq!(error.error.code, "agent_hidden");
+        let prompt = run_deferred_agent_prompt(
+            &mut app,
+            "req-prompt",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                wait: None,
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&prompt).unwrap();
+        assert_eq!(error.error.code, "agent_hidden");
+        assert!(rx.try_recv().is_err(), "nothing reaches the host");
+
+        assert!(app
+            .lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .declare_host_agent(crate::pane::HostAgentClaim {
+                hidden: false,
+                seq: Some(2),
+                ..claim
+            }));
+        let keys = app.handle_agent_send_keys(
+            "req-shown".into(),
+            AgentSendKeysParams {
+                target: "reviewer".into(),
+                keys: vec!["enter".into()],
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&keys).unwrap();
+        assert!(matches!(success.result, ResponseResult::Ok {}));
+    }
+
+    #[tokio::test]
+    async fn host_agent_declarations_need_a_known_agent_and_a_foreground_host() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        let declare = |app: &mut App, agent: Option<&str>| {
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "host".into(),
+                method: crate::api::schema::Method::PaneHostAgent(
+                    crate::api::schema::PaneHostAgentParams {
+                        pane_id: public_pane_id.clone(),
+                        host_pid: std::process::id(),
+                        agent: agent.map(str::to_string),
+                        hidden: false,
+                        waiting: false,
+                        seq: None,
+                    },
+                ),
+            });
+            serde_json::from_str::<crate::api::schema::ErrorResponse>(&response)
+                .map(|error| error.error.code)
+                .unwrap_or_else(|_| panic!("expected an error: {response}"))
+        };
+
+        assert_eq!(declare(&mut app, Some("not-an-agent")), "invalid_agent");
+        // The test process is not in this pane's foreground job.
+        assert_eq!(declare(&mut app, Some("codex")), "host_not_foreground");
+        assert_eq!(declare(&mut app, None), "host_not_foreground");
+        assert!(app
+            .lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .host_agent_claim()
+            .is_none());
     }
 
     #[tokio::test]

@@ -722,6 +722,73 @@ mod tests {
     }
 
     #[test]
+    fn host_claims_cross_the_handoff_and_older_panes_have_none() {
+        let older: crate::handoff_runtime::HandoffRuntimeState =
+            serde_json::from_value(serde_json::json!({
+                "pane_id": 7, "child_pid": 1, "rows": 24, "cols": 80,
+                "cell_width_px": 0, "cell_height_px": 0
+            }))
+            .expect("a pane from a server without host claims should load");
+        assert!(older.host_agent.is_none());
+
+        let claim = crate::pane::HostAgentClaim {
+            host: crate::pane::HostProcess {
+                pid: 42,
+                start_token: 9,
+            },
+            agent: Some(crate::detect::Agent::Claude),
+            hidden: true,
+            waiting: true,
+            seq: Some(3),
+        };
+        let pane = crate::handoff_runtime::HandoffRuntimeState {
+            host_agent: Some(crate::handoff_runtime::HandoffHostAgent::from_claim(claim)),
+            ..older
+        };
+        let manifest = manifest_for(empty_snapshot(), vec![pane], None, None, None, None);
+        let encoded = serde_json::to_vec(&manifest).expect("manifest should serialize");
+        let decoded: HandoffManifest =
+            serde_json::from_slice(&encoded).expect("manifest should deserialize");
+        let carried = decoded.panes[0].host_agent.clone().expect("claim carried");
+        assert_eq!(carried.clone().claim(), Some(claim));
+
+        let unknown = crate::handoff_runtime::HandoffHostAgent {
+            agent: Some("not-an-agent".into()),
+            ..carried
+        };
+        assert_eq!(
+            unknown.claim(),
+            None,
+            "an unknown agent falls back to probing"
+        );
+    }
+
+    #[test]
+    fn an_older_server_imports_panes_with_host_claims() {
+        /// A pane as servers before host claims decode it.
+        #[derive(Deserialize)]
+        #[allow(dead_code)] // Only decoding is under test.
+        struct PreHostClaimPane {
+            pane_id: u32,
+            child_pid: u32,
+            rows: u16,
+            cols: u16,
+        }
+
+        let mut value = serde_json::json!({
+            "pane_id": 7, "child_pid": 1, "rows": 24, "cols": 80,
+            "cell_width_px": 0, "cell_height_px": 0
+        });
+        value.as_object_mut().unwrap().insert(
+            "host_agent".into(),
+            serde_json::json!({ "host_pid": 42, "host_start_token": 9, "agent": "pi" }),
+        );
+        let older: PreHostClaimPane =
+            serde_json::from_value(value).expect("an older server should ignore the claim");
+        assert_eq!(older.pane_id, 7);
+    }
+
+    #[test]
     fn a_manifest_written_before_the_title_field_still_loads() {
         let manifest = manifest_for(
             empty_snapshot(),

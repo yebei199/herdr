@@ -220,6 +220,30 @@ fn request_round_trips_for_server_stop() {
 }
 
 #[test]
+fn pane_host_agent_defaults_to_a_visible_declaration_without_an_agent() {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "req_host",
+        "method": "pane.host_agent",
+        "params": { "pane_id": "1-1", "host_pid": 42 }
+    }))
+    .unwrap();
+    assert_eq!(
+        request.method,
+        Method::PaneHostAgent(PaneHostAgentParams {
+            pane_id: "1-1".into(),
+            host_pid: 42,
+            agent: None,
+            hidden: false,
+            waiting: false,
+            seq: None,
+        })
+    );
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "pane.host_agent");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+}
+
+#[test]
 fn request_round_trips_for_server_reload_config() {
     let request = Request {
         id: "req_reload".into(),

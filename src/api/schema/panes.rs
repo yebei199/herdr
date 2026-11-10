@@ -453,6 +453,29 @@ pub struct PaneReleaseAgentParams {
     pub seq: Option<u64>,
 }
 
+/// A host process in the pane's foreground job declares the agent the pane
+/// stands for while that agent runs where Herdr cannot see its process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneHostAgentParams {
+    pub pane_id: String,
+    /// The declaring process; it must lead or join the pane's foreground job.
+    /// Its exit ends the declared agent.
+    pub host_pid: u32,
+    /// The agent the pane stands for; omitted once that agent has exited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The pane shows the host instead of the agent: only the terminal title
+    /// is state evidence, and agent input is refused.
+    #[serde(default)]
+    pub hidden: bool,
+    /// The agent waits for the user.
+    #[serde(default)]
+    pub waiting: bool,
+    /// Declarations from one host with a sequence not above the last are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInfo {
     pub pane_id: String,

@@ -372,6 +372,58 @@ pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetectio
     evaluate_loaded_manifest(agent, input, loaded, false).into_detection()
 }
 
+/// Detection from the title and progress regions alone, for a pane whose
+/// screen shows another program. Without a matching rule the state is
+/// unknown rather than the known-agent idle fallback.
+pub fn detect_title_only(agent: Agent, osc_title: &str, osc_progress: &str) -> AgentDetection {
+    let unknown = AgentDetection {
+        state: AgentState::Unknown,
+        skip_state_update: false,
+        visible_idle: false,
+        visible_blocker: false,
+        visible_working: false,
+    };
+    let Some(loaded) = load_manifest(agent) else {
+        return unknown;
+    };
+    let input = DetectionInput {
+        screen: "",
+        osc_title,
+        osc_progress,
+    };
+    let mut matched: Option<&ManifestRule> = None;
+    for (rule, compiled_rule) in loaded
+        .manifest
+        .rules
+        .iter()
+        .zip(loaded.compiled_rules.iter())
+    {
+        if !matches!(rule.region.trim(), "osc_title" | "osc_progress")
+            || !compiled_rule_matches(compiled_rule, region(input, &rule.region))
+        {
+            continue;
+        }
+        match matched {
+            Some(previous) if previous.priority >= rule.priority => {}
+            _ => matched = Some(rule),
+        }
+    }
+    let Some(rule) = matched else {
+        return unknown;
+    };
+    let state = rule
+        .state
+        .map(AgentState::from)
+        .unwrap_or(AgentState::Unknown);
+    AgentDetection {
+        state,
+        skip_state_update: rule.skip_state_update,
+        visible_idle: rule.visible_idle && state == AgentState::Idle,
+        visible_blocker: rule.visible_blocker && state == AgentState::Blocked,
+        visible_working: rule.visible_working && state == AgentState::Working,
+    }
+}
+
 pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
     explain_with_input(
         agent,

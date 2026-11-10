@@ -2598,6 +2598,51 @@
           ],
           "type": "object"
         },
+        "PaneHostAgentParams": {
+          "description": "A host process in the pane's foreground job declares the agent the pane\nstands for while that agent runs where Herdr cannot see its process.",
+          "properties": {
+            "agent": {
+              "description": "The agent the pane stands for; omitted once that agent has exited.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hidden": {
+              "default": false,
+              "description": "The pane shows the host instead of the agent: only the terminal title\nis state evidence, and agent input is refused.",
+              "type": "boolean"
+            },
+            "host_pid": {
+              "description": "The declaring process; it must lead or join the pane's foreground job.\nIts exit ends the declared agent.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "seq": {
+              "description": "Declarations from one host with a sequence not above the last are ignored.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "waiting": {
+              "default": false,
+              "description": "The agent waits for the user.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "host_pid"
+          ],
+          "type": "object"
+        },
         "PaneInputSetParams": {
           "properties": {
             "pane_id": {
@@ -6021,6 +6066,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReleaseAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.host_agent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneHostAgentParams"
             }
           },
           "required": [
