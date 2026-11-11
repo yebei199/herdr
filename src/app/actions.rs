@@ -1179,7 +1179,7 @@ fn url_span_at_column(cells: &[TextCell], clicked_idx: usize) -> Option<CellSpan
             || starts_with_chars(&cells[start..], "https://")
         {
             let mut end = start;
-            while end + 1 < cells.len() && !cells[end + 1].ch.is_whitespace() {
+            while end + 1 < cells.len() && !ends_bare_url(cells[end + 1].ch) {
                 end += 1;
             }
             if clicked_idx >= start && clicked_idx <= end {
@@ -1192,6 +1192,22 @@ fn url_span_at_column(cells: &[TextCell], clicked_idx: usize) -> Option<CellSpan
         }
     }
     None
+}
+
+/// Prose written in CJK puts punctuation or words straight after a URL, so a
+/// bare URL also ends at CJK, Hangul, General Punctuation and fullwidth forms.
+fn ends_bare_url(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            '\u{00B7}'
+                | '\u{2000}'..='\u{206F}'
+                | '\u{2E80}'..='\u{9FFF}'
+                | '\u{AC00}'..='\u{D7AF}'
+                | '\u{F900}'..='\u{FAFF}'
+                | '\u{FE30}'..='\u{FE4F}'
+                | '\u{FF00}'..='\u{FFEF}'
+        )
 }
 
 fn trim_url_edges(cells: &[TextCell], span: CellSpan) -> Option<CellSpan> {
@@ -2565,6 +2581,26 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    #[test]
+    fn bare_url_ends_at_cjk_text_and_punctuation() {
+        for text in [
+            "见 https://example.com/x。后面",
+            "打开https://example.com/x看看",
+            "（https://example.com/x）",
+            "“https://example.com/x”",
+            "https://example.com/x，再看",
+            "https://example.com/x——下一句",
+            "https://example.com/x…",
+        ] {
+            assert_eq!(
+                selected_url(text, "example"),
+                Some("https://example.com/x"),
+                "{text}"
+            );
+        }
+        assert_eq!(selected_url("https://example.com/x。后面", "后面"), None);
     }
 
     #[test]
