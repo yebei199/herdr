@@ -2776,7 +2776,10 @@ impl HeadlessServer {
             return None;
         }
         let runtime = self.app.terminal_runtimes.get(&terminal.id)?;
-        if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
+        // A hiding host would take the harvest's wheel events as its own scrolling.
+        if runtime.hides_hosted_agent()
+            || runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport)
+        {
             return None;
         }
         let (screen, initial, content_seq) = runtime.screen_text_snapshot_with_seq()?;
@@ -2795,7 +2798,12 @@ impl HeadlessServer {
     fn poll_pending_alt_screen_reads(&mut self, now: Instant) {
         let pending = std::mem::take(&mut self.pending_alt_screen_reads);
         for read in pending {
-            let runtime = self.app.terminal_runtimes.get(&read.terminal_id);
+            // Once the host hides the agent, no wheel event may follow, not even the restore.
+            let runtime = self
+                .app
+                .terminal_runtimes
+                .get(&read.terminal_id)
+                .filter(|runtime| !runtime.hides_hosted_agent());
             let remains_idle = self
                 .app
                 .state

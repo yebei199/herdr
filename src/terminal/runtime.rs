@@ -257,6 +257,12 @@ impl TerminalRuntime {
         self.0.host_agent_claim()
     }
 
+    /// The pane shows a host that hides its agent, so pty input would reach the host.
+    pub(crate) fn hides_hosted_agent(&self) -> bool {
+        self.host_agent_claim()
+            .is_some_and(|claim| claim.hidden && claim.agent.is_some())
+    }
+
     pub(crate) fn declare_host_agent(&self, claim: crate::pane::HostAgentClaim) -> bool {
         self.0.declare_host_agent(claim)
     }

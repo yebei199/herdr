@@ -2011,16 +2011,37 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    /// The runtime that pane input writes to, refused while its host hides the agent:
+    /// the host is in the foreground and would take the input as its own.
+    fn pane_input_runtime(
+        &self,
+        id: &str,
+        pane_id: &str,
+    ) -> Result<&crate::terminal::TerminalRuntime, String> {
+        let runtime = self
+            .parse_pane_id(pane_id)
+            .and_then(|(ws_idx, pane)| self.lookup_runtime_sender(ws_idx, pane))
+            .ok_or_else(|| pane_not_found(id.to_string(), pane_id))?;
+        if runtime.hides_hosted_agent() {
+            return Err(encode_error(
+                id.to_string(),
+                "agent_hidden",
+                format!(
+                    "pane {pane_id} runs an agent hidden in its host; input would reach the host. Show the agent first"
+                ),
+            ));
+        }
+        Ok(runtime)
+    }
+
     pub(super) fn handle_pane_send_text(
         &mut self,
         id: String,
         params: PaneSendTextParams,
     ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+        let runtime = match self.pane_input_runtime(&id, &params.pane_id) {
+            Ok(runtime) => runtime,
+            Err(response) => return response,
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
             return encode_error(id, "pane_send_failed", err.to_string());
@@ -2034,11 +2055,9 @@ impl App {
         id: String,
         params: PaneSendInputParams,
     ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+        let runtime = match self.pane_input_runtime(&id, &params.pane_id) {
+            Ok(runtime) => runtime,
+            Err(response) => return response,
         };
         let bytes = match super::super::api_helpers::encode_api_input(
             runtime,
@@ -2139,11 +2158,9 @@ impl App {
         id: String,
         params: PaneSendKeysParams,
     ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return pane_not_found(id, &params.pane_id);
-        };
-        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
-            return pane_not_found(id, &params.pane_id);
+        let runtime = match self.pane_input_runtime(&id, &params.pane_id) {
+            Ok(runtime) => runtime,
+            Err(response) => return response,
         };
         let encoded_keys = match encode_api_keys(runtime, &params.keys) {
             Ok(encoded_keys) => encoded_keys,
@@ -3044,6 +3061,84 @@ mod tests {
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(rx.try_recv().unwrap(), bytes::Bytes::from_static(b"+"));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn pane_input_is_refused_only_while_a_host_hides_its_agent() {
+        let (mut app, pane_id, mut rx) = app_with_send_key_runtime(8);
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let inputs = [
+            crate::api::schema::Method::PaneSendText(PaneSendTextParams {
+                pane_id: pane_id.clone(),
+                text: "R".into(),
+            }),
+            crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+                pane_id: pane_id.clone(),
+                keys: vec!["esc".into()],
+            }),
+            crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+                pane_id: pane_id.clone(),
+                text: "ls".into(),
+                keys: vec!["Enter".into()],
+            }),
+        ];
+        let claim = crate::pane::HostAgentClaim {
+            host: crate::pane::HostProcess {
+                pid: 4242,
+                start_token: 1,
+            },
+            agent: Some(Agent::Codex),
+            hidden: true,
+            waiting: false,
+            seq: Some(1),
+        };
+        let states = [
+            (None, true),
+            (Some(claim), false),
+            (
+                Some(crate::pane::HostAgentClaim {
+                    hidden: false,
+                    seq: Some(2),
+                    ..claim
+                }),
+                true,
+            ),
+            // A host whose agent has exited hides nothing.
+            (
+                Some(crate::pane::HostAgentClaim {
+                    agent: None,
+                    seq: Some(3),
+                    ..claim
+                }),
+                true,
+            ),
+        ];
+
+        for (claim, delivered) in states {
+            if let Some(claim) = claim {
+                assert!(app
+                    .lookup_runtime_sender(0, internal_pane_id)
+                    .unwrap()
+                    .declare_host_agent(claim));
+            }
+            for method in &inputs {
+                let response = app.handle_api_request(crate::api::schema::Request {
+                    id: "req".into(),
+                    method: method.clone(),
+                });
+                if delivered {
+                    let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+                    assert_eq!(success.result, ResponseResult::Ok {}, "{method:?}");
+                    assert!(rx.try_recv().is_ok(), "{method:?} reaches the pane");
+                    while rx.try_recv().is_ok() {}
+                } else {
+                    let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+                    assert_eq!(error.error.code, "agent_hidden", "{method:?}");
+                    assert!(error.error.message.contains("Show the agent first"));
+                    assert!(rx.try_recv().is_err(), "{method:?} must not reach the host");
+                }
+            }
+        }
     }
 
     #[tokio::test]

@@ -444,7 +444,9 @@ fn agent_hidden(id: String, target: &str) -> String {
     encode_error(
         id,
         "agent_hidden",
-        format!("agent {target} is hidden behind its host; input would reach the host instead"),
+        format!(
+            "agent {target} is hidden in its host; input would reach the host. Show the agent first"
+        ),
     )
 }
 

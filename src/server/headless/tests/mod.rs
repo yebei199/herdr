@@ -4175,6 +4175,99 @@ fn terminal_observers_wait_for_synchronized_output_with_or_without_baseline() {
     });
 }
 
+#[test]
+fn alternate_screen_history_read_never_scrolls_a_host_that_hides_its_agent() {
+    with_terminal_session_test_server(|server, terminal_id, _, public_pane_id| {
+        let terminal = server
+            .app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal");
+        terminal.detected_agent = Some(crate::detect::Agent::Codex);
+        terminal.state = crate::detect::AgentState::Idle;
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80,
+                24,
+                0,
+                b"\x1b[?1049h\x1b[?1000h\x1b[?1006hidle",
+                64,
+            );
+        server
+            .app
+            .terminal_runtimes
+            .insert(terminal_id.clone(), runtime);
+        let request = api::schema::Request {
+            id: "read".into(),
+            method: api::schema::Method::AgentRead(api::schema::AgentReadParams {
+                target: public_pane_id,
+                source: api::schema::ReadSource::Recent,
+                lines: Some(200),
+                format: api::schema::ReadFormat::Text,
+                strip_ansi: true,
+            }),
+        };
+        let spec = server
+            .alt_screen_read_spec(&request)
+            .expect("an idle agent's history is harvested by scrolling");
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        server.pending_alt_screen_reads.push(
+            crate::server::alt_screen_read::PendingAltScreenRead::start(
+                spec.terminal_id,
+                "read".into(),
+                respond_to,
+                "fallback".into(),
+                api::schema::PaneReadResult {
+                    pane_id: "w1:p1".into(),
+                    workspace_id: "w1".into(),
+                    tab_id: "w1:t1".into(),
+                    source: api::schema::ReadSource::Recent,
+                    format: api::schema::ReadFormat::Text,
+                    text: String::new(),
+                    revision: 0,
+                    truncated: false,
+                },
+                spec.lines,
+                spec.unwrap,
+                spec.initial,
+                spec.content_seq,
+                started,
+            ),
+        );
+        server.poll_pending_alt_screen_reads(started + Duration::from_millis(50));
+        assert!(input_rx.try_recv().is_ok(), "the harvest scrolls the agent");
+
+        let claim = crate::pane::HostAgentClaim {
+            host: crate::pane::HostProcess {
+                pid: 4242,
+                start_token: 1,
+            },
+            agent: Some(crate::detect::Agent::Codex),
+            hidden: true,
+            waiting: false,
+            seq: Some(1),
+        };
+        assert!(server
+            .app
+            .terminal_runtimes
+            .get(&terminal_id)
+            .expect("runtime")
+            .declare_host_agent(claim));
+        while input_rx.try_recv().is_ok() {}
+        server.poll_pending_alt_screen_reads(started + Duration::from_millis(500));
+
+        assert_eq!(response_rx.try_recv().as_deref(), Ok("fallback"));
+        assert!(server.pending_alt_screen_reads.is_empty());
+        assert!(
+            input_rx.try_recv().is_err(),
+            "no wheel event, not even the restore, reaches the host"
+        );
+        assert!(server.alt_screen_read_spec(&request).is_none());
+    });
+}
+
 fn connect_pending_terminal_client(server: &mut HeadlessServer, client_id: u64) {
     let _control_rx = connect_pending_terminal_client_with_control_rx(server, client_id);
 }
