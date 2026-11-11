@@ -722,6 +722,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_3200px_rgba_screenshot_fits_one_graphics_transaction() {
+        // Claude Code sends file-backed PNGs with q=1, so they are forwarded as
+        // decoded RGBA; a still over the budget is skipped without any error.
+        let screenshot = image_transfer_estimated_size(3200 * 1922 * 4);
+        assert!(screenshot <= HEADLESS_GRAPHICS_TRANSACTION_BUDGET);
+    }
+
+    #[test]
     fn deferred_updates_match_inline_for_rgb_and_rgba() {
         for format in [KittyImageFormat::Rgb, KittyImageFormat::Rgba] {
             let mut first = test_placement(0, 0);

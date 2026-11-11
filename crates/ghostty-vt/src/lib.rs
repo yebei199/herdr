@@ -202,7 +202,9 @@ pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
 const TERMINAL_DATA_COLOR_FOREGROUND: ffi::GhosttyTerminalData = 18;
 const TERMINAL_DATA_COLOR_CURSOR: ffi::GhosttyTerminalData = 20;
 
-const KITTY_IMAGE_STORAGE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+// Ghostty's own default. Claude Code sends each picture once, so an evicted
+// image never comes back; at 64 MiB two 3200 px screenshots evicted the rest.
+const KITTY_IMAGE_STORAGE_LIMIT_BYTES: u64 = 320 * 1000 * 1000;
 const APC_MAX_BYTES: usize = 16 * 1024 * 1024;
 const APC_MAX_BYTES_KITTY: usize = 16 * 1024 * 1024;
 pub const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
@@ -1120,6 +1122,7 @@ impl Terminal {
             .into_result()?;
         }
         self.set_kitty_source_forwarding(true)?;
+        self.set_kitty_png_forwarding(true)?;
         Ok(())
     }
 
@@ -1127,7 +1130,9 @@ impl Terminal {
         native_source::set_forwarding(self.raw, enabled)
     }
 
-    #[cfg(test)]
+    /// Keep quiet (`q=2`) PNG transmissions encoded and forward the PNG bytes
+    /// instead of decoded RGBA: a 3200 px screenshot crosses as ~1 MB, not ~25 MB.
+    /// Other transmissions (`q=0/1`, files, animation frames) still decode.
     fn set_kitty_png_forwarding(&mut self, enabled: bool) -> Result<(), Error> {
         unsafe {
             ffi::ghostty_terminal_set(
@@ -3890,7 +3895,9 @@ mod tests {
         let before = terminal.kitty_image_placements().unwrap();
         assert_eq!(before.len(), 1);
         assert_eq!((before[0].image_width, before[0].image_height), (2, 1));
-        assert_eq!(before[0].data, [255, 0, 0, 255, 0, 0, 255, 255]);
+        // Quiet PNG uploads are forwarded as the validated PNG bytes.
+        assert_eq!(before[0].format, KittyImageFormat::Png);
+        assert_eq!(before[0].data, png);
         // The parser retires the old placement, but never places corrupt data.
         terminal.write(upload(&png[..png.len() / 2]).as_bytes());
         assert!(terminal.kitty_image_placements().unwrap().is_empty());

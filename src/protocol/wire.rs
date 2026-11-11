@@ -26,7 +26,9 @@ pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 /// Maximum allowed server-to-client frame payload when Kitty graphics are enabled.
 /// Normal traffic keeps `MAX_FRAME_SIZE`; this larger cap is only for explicit
 /// image payloads that are naturally much larger after base64 encoding.
-pub const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
+/// Decoded RGBA is forwarded for anything that is not a quiet PNG; at 32 MiB a
+/// single 3200x1922 still (~33 MB encoded) was silently skipped.
+pub const MAX_GRAPHICS_FRAME_SIZE: usize = 128 * 1024 * 1024;
 
 /// Maximum clipboard image payload size for remote paste bridging.
 pub const MAX_CLIPBOARD_IMAGE_PAYLOAD: usize = 16 * 1024 * 1024;

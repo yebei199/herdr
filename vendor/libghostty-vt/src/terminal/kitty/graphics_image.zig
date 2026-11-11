@@ -672,6 +672,23 @@ pub const LoadingImage = struct {
             error.DimensionsRequired => return error.DimensionsRequired,
             error.DimensionsTooLarge => return error.DimensionsTooLarge,
         };
+        // Decode once to validate, then keep only the encoded bytes: corrupt
+        // data is never placed, and forwarding still sends the small PNG.
+        {
+            const decode_png_fn = sys.decode_png orelse return self.complete(alloc);
+            var limited: LimitedAllocator = .init(alloc, max_size);
+            const decode_alloc = limited.allocator();
+            const decoded = decode_png_fn(decode_alloc, self.data.items) catch |err| switch (err) {
+                error.InvalidData => return error.InvalidData,
+                error.OutOfMemory => if (limited.limit_exceeded)
+                    return error.InvalidData
+                else
+                    return error.OutOfMemory,
+            };
+            defer decode_alloc.free(decoded.data);
+            if (decoded.width != header.width or decoded.height != header.height or
+                decoded.data.len != header.decoded_len) return error.InvalidData;
+        }
         var result = self.image;
         result.width = header.width;
         result.height = header.height;

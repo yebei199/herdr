@@ -70,20 +70,37 @@ fn native_png_render_scale_profile() {
     }
 }
 
-#[test]
-fn normal_kitty_graphics_fully_decodes_quiet_png_uploads() {
+fn upload_with_quiet(quiet: u8) -> Vec<KittyImagePlacement> {
     let mut terminal = Terminal::new(20, 10, 0).unwrap();
     terminal.enable_kitty_graphics().unwrap();
     terminal.resize(20, 10, 8, 16).unwrap();
-    let before = PNG_DECODE_CALLS.get();
     terminal.write(
         format!(
-            "\x1b_Ga=T,f=100,i=7,c=4,r=1,q=2;{}\x1b\\",
+            "\x1b_Ga=T,f=100,i=7,c=4,r=1,q={quiet};{}\x1b\\",
             base64::engine::general_purpose::STANDARD.encode(fixture())
         )
         .as_bytes(),
     );
-    let placements = terminal.kitty_image_placements().unwrap();
+    terminal.kitty_image_placements().unwrap()
+}
+
+#[test]
+fn normal_kitty_graphics_forwards_quiet_png_uploads_as_png() {
+    let before = PNG_DECODE_CALLS.get();
+    let placements = upload_with_quiet(2);
+    assert_eq!(placements.len(), 1);
+    assert_eq!(placements[0].format, KittyImageFormat::Png);
+    assert_eq!(placements[0].data, fixture());
+    // Validated once at upload; reading placements never decodes again.
+    assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
+}
+
+#[test]
+fn png_uploads_that_expect_error_replies_still_decode() {
+    // Claude Code sends file-backed pictures with q=1; failures must be
+    // reported at upload time, so these stay decoded RGBA.
+    let before = PNG_DECODE_CALLS.get();
+    let placements = upload_with_quiet(1);
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].format, KittyImageFormat::Rgba);
     assert_eq!(placements[0].data, vec![42; 32 * 16 * 4]);
@@ -91,7 +108,7 @@ fn normal_kitty_graphics_fully_decodes_quiet_png_uploads() {
 }
 
 #[test]
-fn quiet_png_forwarding_retains_exact_payload_without_pixel_decode() {
+fn quiet_png_forwarding_retains_exact_payload_after_one_validating_decode() {
     let bytes = fixture();
     let mut terminal = terminal();
     let before = PNG_DECODE_CALLS.get();
@@ -110,7 +127,7 @@ fn quiet_png_forwarding_retains_exact_payload_without_pixel_decode() {
         (placements[0].image_width, placements[0].image_height),
         (32, 16)
     );
-    assert_eq!(PNG_DECODE_CALLS.get(), before);
+    assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
 }
 
 #[test]
@@ -130,18 +147,18 @@ fn placeholder_png_forwarding_and_lazy_animation_decode() {
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].format, KittyImageFormat::Png);
     assert_eq!(placements[0].data, bytes);
-    assert_eq!(PNG_DECODE_CALLS.get(), before);
+    assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
     let fingerprint = placements[0].data_fingerprint;
     terminal.write(b"\x1b_Ga=a,i=7,q=2;\x1b\\");
     let materialized = terminal.kitty_image_placements().unwrap();
-    assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
+    assert_eq!(PNG_DECODE_CALLS.get(), before + 2);
     assert_eq!(materialized[0].format, KittyImageFormat::Rgba);
     assert_eq!(materialized[0].data, [42; 32 * 16 * 4]);
     assert_ne!(materialized[0].data_fingerprint, fingerprint);
 }
 
 #[test]
-fn experimental_quiet_png_defers_crc_valid_compressed_data_errors() {
+fn quiet_png_with_crc_valid_corrupt_data_is_never_placed() {
     let mut bytes = fixture();
     let mut offset = 8;
     loop {
@@ -170,17 +187,8 @@ fn experimental_quiet_png_defers_crc_valid_compressed_data_errors() {
             )
             .as_bytes(),
         );
-        let placements = terminal.kitty_image_placements().unwrap();
-        if quiet == 0 {
-            assert!(placements.is_empty());
-            assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
-        } else {
-            assert_eq!(placements[0].data, bytes);
-            assert_eq!(PNG_DECODE_CALLS.get(), before);
-            terminal.write(b"\x1b_Ga=a,i=7,q=2;\x1b\\");
-            assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
-            assert_eq!(terminal.kitty_image_placements().unwrap()[0].data, bytes);
-        }
+        assert!(terminal.kitty_image_placements().unwrap().is_empty(), "quiet {quiet}");
+        assert_eq!(PNG_DECODE_CALLS.get(), before + 1, "quiet {quiet}");
     }
 }
 
@@ -228,5 +236,11 @@ fn chunked_png_forwarding_inherits_quiet_mode() {
     assert!(terminal.kitty_image_placements().unwrap().is_empty());
     terminal.write(format!("\x1b_Gm=0;{}\x1b\\", &encoded[split..]).as_bytes());
     assert_eq!(terminal.kitty_image_placements().unwrap()[0].data, bytes);
-    assert_eq!(PNG_DECODE_CALLS.get(), before);
+    assert_eq!(PNG_DECODE_CALLS.get(), before + 1);
+}
+
+#[test]
+fn image_storage_holds_several_3200px_screenshots() {
+    const SCREENSHOT_RGBA: u64 = 3200 * 1922 * 4;
+    assert!(KITTY_IMAGE_STORAGE_LIMIT_BYTES >= 8 * SCREENSHOT_RGBA);
 }
