@@ -2394,7 +2394,7 @@ mod tests {
     #[test]
     fn link_resolution_regions_unicode_punctuation_and_explicit_links() {
         let mut terminal = crate::ghostty::Terminal::new(80, 4, 1024).unwrap();
-        terminal.write("[文档](https://example.com/路径?q=a(b)), next".as_bytes());
+        terminal.write("[文档](https://example.com/🚀🌏?q=a(b)), next".as_bytes());
         let regions = terminal
             .viewport_link_regions(7, 0, url_byte_range)
             .unwrap();
@@ -2442,7 +2442,7 @@ mod tests {
     #[test]
     fn link_resolution_regions_keep_grapheme_byte_offsets() {
         let mut terminal = crate::ghostty::Terminal::new(40, 3, 1024).unwrap();
-        terminal.write("e\u{301}(https://example.com/路e\u{301}),".as_bytes());
+        terminal.write("e\u{301}(https://example.com/🚀e\u{301}),".as_bytes());
         let expected = vec![crate::ghostty::LinkRegion {
             row: 0,
             start_col: 2,
@@ -2482,7 +2482,7 @@ mod tests {
     #[test]
     fn link_resolution_regions_clip_wraps_and_wide_padding() {
         let mut terminal = crate::ghostty::Terminal::new(21, 3, 1024).unwrap();
-        terminal.write("https://example.com/路径".as_bytes());
+        terminal.write("https://example.com/🚀🌏".as_bytes());
         let regions = terminal
             .viewport_link_regions(1, 1, url_byte_range)
             .unwrap();
@@ -2539,25 +2539,25 @@ mod tests {
     #[test]
     fn link_activation_preserves_unicode_and_click_boundaries_after_resize() {
         let mut terminal = crate::ghostty::Terminal::new(80, 5, 1024 * 1024).unwrap();
-        terminal.write("[文档](https://example.com/路径?q=a(b)), next".as_bytes());
+        terminal.write("[文档](https://example.com/🚀🌏?q=a(b)), next".as_bytes());
         assert!(
             url_from_link_target(terminal.viewport_link_target(1, 0).unwrap().unwrap()).is_none()
         );
         assert_eq!(
             url_from_link_target(terminal.viewport_link_target(7, 0).unwrap().unwrap()).as_deref(),
-            Some("https://example.com/路径?q=a(b)")
+            Some("https://example.com/🚀🌏?q=a(b)")
         );
         terminal.resize(20, 5, 0, 0).unwrap();
         assert_eq!(
             url_from_link_target(terminal.viewport_link_target(9, 1).unwrap().unwrap()).as_deref(),
-            Some("https://example.com/路径?q=a(b)")
+            Some("https://example.com/🚀🌏?q=a(b)")
         );
         assert!(terminal.viewport_link_target(19, 4).unwrap().is_none());
     }
 
     #[test]
     fn link_activation_skips_wide_character_wrap_padding() {
-        let url = "https://example.com/路径";
+        let url = "https://example.com/🚀🌏";
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 1024).unwrap();
         terminal.write(url.as_bytes());
         for col in 0..4 {
