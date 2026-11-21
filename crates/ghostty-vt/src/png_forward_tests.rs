@@ -187,7 +187,10 @@ fn quiet_png_with_crc_valid_corrupt_data_is_never_placed() {
             )
             .as_bytes(),
         );
-        assert!(terminal.kitty_image_placements().unwrap().is_empty(), "quiet {quiet}");
+        assert!(
+            terminal.kitty_image_placements().unwrap().is_empty(),
+            "quiet {quiet}"
+        );
         assert_eq!(PNG_DECODE_CALLS.get(), before + 1, "quiet {quiet}");
     }
 }
@@ -242,5 +245,5 @@ fn chunked_png_forwarding_inherits_quiet_mode() {
 #[test]
 fn image_storage_holds_several_3200px_screenshots() {
     const SCREENSHOT_RGBA: u64 = 3200 * 1922 * 4;
-    assert!(KITTY_IMAGE_STORAGE_LIMIT_BYTES >= 8 * SCREENSHOT_RGBA);
+    const { assert!(KITTY_IMAGE_STORAGE_LIMIT_BYTES >= 8 * SCREENSHOT_RGBA) };
 }
