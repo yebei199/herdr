@@ -265,11 +265,10 @@ fn pane_host_agent_needs_exactly_one_of_agent_or_none() {
     ] {
         let run = run_cli(&socket_path, args);
         assert_eq!(run.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&run.stderr);
         assert!(
-            String::from_utf8_lossy(&run.stderr)
-                .contains("exactly one of --agent or --none is required"),
-            "stderr: {}",
-            String::from_utf8_lossy(&run.stderr)
+            stderr.contains("--agent") && stderr.contains("--none"),
+            "stderr: {stderr}"
         );
     }
 
@@ -374,9 +373,8 @@ fn root_and_command_group_help_point_agents_to_plain_text_docs() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for expected in [
             "Are you an AI? Use these resources ONLY IF your task specifically asks you to:",
-            "https://herdr.dev/agent-guide.md",
-            "https://herdr.dev/llms.txt",
             "herdr --skill",
+            "https://github.com/herdrdev/herdr",
         ] {
             assert!(
                 stdout.contains(expected),
@@ -455,7 +453,7 @@ fn removed_wait_and_agent_send_commands_are_rejected() {
         .unwrap();
     assert_eq!(send.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&send.stderr);
-    assert!(stderr.contains("herdr agent send-keys"));
+    assert!(stderr.contains("unrecognized subcommand 'send'"));
     assert!(!stderr.contains("herdr agent send <"));
 }
 

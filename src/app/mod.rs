@@ -142,12 +142,15 @@ pub struct App {
     pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    pub(crate) pending_host_appearance_deadline: Option<Instant>,
+    pane_host_appearance: Option<crate::terminal_theme::HostAppearance>,
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
+    server_hangup_probe: fn() -> bool,
     pub(crate) detached_process_children: Vec<std::process::Child>,
     tab_bar_status_generation: u64,
     tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
@@ -296,6 +299,7 @@ fn resolve_palette_for_theme_name(
     fallback_name: &str,
     runtime: &state::ThemeRuntimeConfig,
     mode_custom: Option<&crate::config::ModeThemeColors>,
+    host: Option<&crate::terminal_theme::TerminalTheme>,
 ) -> state::Palette {
     let mut palette = state::Palette::from_name(name).unwrap_or_else(|| {
         tracing::warn!(
@@ -306,11 +310,17 @@ fn resolve_palette_for_theme_name(
         state::Palette::from_name(fallback_name).unwrap_or_else(state::Palette::catppuccin)
     });
 
+    if crate::config::canonical_theme_name(name) == Some("terminal") {
+        if let Some(host) = host {
+            palette = state::Palette::terminal_for_host(host);
+        }
+    }
     if let Some(custom) = &runtime.custom {
         palette = palette.with_overrides(custom);
     }
     if let Some(accent) = &runtime.legacy_accent {
         palette.accent = crate::config::parse_color(accent);
+        palette.accent_fg = None;
     }
     if let Some(custom) = mode_custom {
         palette = palette.with_mode_overrides(custom);
@@ -322,6 +332,7 @@ fn resolve_palette_for_theme_name(
 fn resolve_effective_theme(
     runtime: &state::ThemeRuntimeConfig,
     appearance: Option<crate::terminal_theme::HostAppearance>,
+    host: Option<&crate::terminal_theme::TerminalTheme>,
 ) -> (state::Palette, String) {
     let (name, fallback, mode_custom) = if runtime.auto_switch {
         match appearance.unwrap_or(crate::terminal_theme::HostAppearance::Dark) {
@@ -346,7 +357,7 @@ fn resolve_effective_theme(
         (&runtime.manual_name, "catppuccin", None)
     };
     (
-        resolve_palette_for_theme_name(name, fallback, runtime, mode_custom),
+        resolve_palette_for_theme_name(name, fallback, runtime, mode_custom, host),
         name.clone(),
     )
 }
@@ -358,20 +369,22 @@ pub(crate) fn client_theme_runtime_from_config(config: &Config) -> state::ThemeR
 pub(crate) fn client_palette_for_theme(
     runtime: &state::ThemeRuntimeConfig,
     name: &str,
+    host: &crate::terminal_theme::TerminalTheme,
 ) -> state::Palette {
-    resolve_palette_for_theme_name(name, "catppuccin", runtime, None)
+    resolve_palette_for_theme_name(name, "catppuccin", runtime, None, Some(host))
 }
 
 pub(crate) fn client_palette_from_config(config: &Config) -> state::Palette {
     let runtime = client_theme_runtime_from_config(config);
-    resolve_effective_theme(&runtime, None).0
+    resolve_effective_theme(&runtime, None, None).0
 }
 
 pub(crate) fn client_palette_for_appearance(
     runtime: &state::ThemeRuntimeConfig,
-    appearance: crate::terminal_theme::HostAppearance,
+    appearance: Option<crate::terminal_theme::HostAppearance>,
+    host: &crate::terminal_theme::TerminalTheme,
 ) -> state::Palette {
-    resolve_effective_theme(runtime, Some(appearance)).0
+    resolve_effective_theme(runtime, appearance, Some(host)).0
 }
 
 impl App {
@@ -491,7 +504,7 @@ impl App {
         #[cfg(test)]
         let agent_manifest_summaries = Vec::new();
         let theme_runtime = theme_runtime_config(config, true);
-        let (theme_palette, theme_name) = resolve_effective_theme(&theme_runtime, None);
+        let (theme_palette, theme_name) = resolve_effective_theme(&theme_runtime, None, None);
 
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
@@ -654,6 +667,8 @@ impl App {
             loaded_host_cursor: config.ui.host_cursor,
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
+            pending_host_appearance_deadline: None,
+            pane_host_appearance: None,
             startup_per_agent_delay: Duration::from_millis(
                 config.session.startup_per_agent_delay_ms.into(),
             ),
@@ -662,6 +677,11 @@ impl App {
             session_save_thread: None,
             session_writer,
             pane_exit_checkpoint_pending: false,
+            #[cfg(not(test))]
+            server_hangup_probe: crate::platform::server_hangup_is_recent,
+            // Real SIGHUP evidence is process-global; tests opt in per App.
+            #[cfg(test)]
+            server_hangup_probe: || false,
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),
@@ -3303,7 +3323,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
+    fn normal_autosave_preserves_a_signaled_exit_checkpoint() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let config_home = unique_temp_path("signaled-pane-autosave");
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
@@ -3329,7 +3349,78 @@ mod tests {
         }
         app.save_session_on_shutdown();
 
+        assert!(crate::persist::load().is_some());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[test]
+    fn normal_last_pane_exit_clears_saved_session() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let config_home = unique_temp_path("normal-last-pane-exit");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        let workspace = Workspace::test_new("closed");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.save_session_now();
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        });
+        app.start_background_session_save();
+        if let Some(thread) = app.session_save_thread.take() {
+            thread.join().unwrap();
+        }
+        app.save_session_on_shutdown();
         assert!(crate::persist::load().is_none());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn server_hangup_preserves_unsignaled_pane_exit_checkpoint() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let config_home = unique_temp_path("hangup-unsignaled-pane-exit");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        let mut workspace = Workspace::test_new("preserved");
+        let first_pane = workspace.tabs[0].root_pane;
+        let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.save_session_now();
+
+        app.server_hangup_probe = || true;
+        for pane_id in [first_pane, second_pane] {
+            app.handle_internal_event(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: crate::platform::ChildExitReason::Exited,
+            });
+        }
+        assert!(app.state.workspaces.is_empty());
+        app.start_background_session_save();
+        if let Some(thread) = app.session_save_thread.take() {
+            thread.join().unwrap();
+        }
+        app.save_session_on_shutdown();
+
+        let snapshot = crate::persist::load().expect("hangup checkpoint must survive autosave");
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
 
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(config_home);
