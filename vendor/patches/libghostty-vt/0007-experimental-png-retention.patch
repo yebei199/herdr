@@ -395,7 +395,7 @@ index b1b968b2..203190f1 100644
 +    try testing.expect(storage.loading == null);
 +}
 diff --git a/vendor/libghostty-vt/src/terminal/kitty/graphics_image.zig b/vendor/libghostty-vt/src/terminal/kitty/graphics_image.zig
-index e411bafe..c841c48d 100644
+index e411bafe..08dd5b26 100644
 --- a/vendor/libghostty-vt/src/terminal/kitty/graphics_image.zig
 +++ b/vendor/libghostty-vt/src/terminal/kitty/graphics_image.zig
 @@ -21,6 +21,24 @@ const max_dimension = 10000;
@@ -510,7 +510,7 @@ index e411bafe..c841c48d 100644
          if (self.frame != null) {
              // Kitty allows animation frames to exceed their expected length
              // and just truncates it. Not sure if thats expected but lets
-@@ -592,12 +653,37 @@ pub const LoadingImage = struct {
+@@ -592,12 +653,54 @@ pub const LoadingImage = struct {
 
          // Everything looks good, copy the image data over.
          var result = self.image;
@@ -534,6 +534,23 @@ index e411bafe..c841c48d 100644
 +            error.DimensionsRequired => return error.DimensionsRequired,
 +            error.DimensionsTooLarge => return error.DimensionsTooLarge,
 +        };
++        // Decode once to validate, then keep only the encoded bytes: corrupt
++        // data is never placed, and forwarding still sends the small PNG.
++        {
++            const decode_png_fn = sys.decode_png orelse return self.complete(alloc);
++            var limited: LimitedAllocator = .init(alloc, max_size);
++            const decode_alloc = limited.allocator();
++            const decoded = decode_png_fn(decode_alloc, self.data.items) catch |err| switch (err) {
++                error.InvalidData => return error.InvalidData,
++                error.OutOfMemory => if (limited.limit_exceeded)
++                    return error.InvalidData
++                else
++                    return error.OutOfMemory,
++            };
++            defer decode_alloc.free(decoded.data);
++            if (decoded.width != header.width or decoded.height != header.height or
++                decoded.data.len != header.decoded_len) return error.InvalidData;
++        }
 +        var result = self.image;
 +        result.width = header.width;
 +        result.height = header.height;
@@ -549,7 +566,7 @@ index e411bafe..c841c48d 100644
      /// Debug function to write the data to a file. This is useful for
      /// capturing some test data for unit tests.
      pub fn debugDump(io: std.Io, self: LoadingImage) !void {
-@@ -768,11 +854,16 @@ pub const Image = struct {
+@@ -768,11 +871,16 @@ pub const Image = struct {
          /// Expected decoded byte length for a payload that has not arrived.
          pending: usize,
 
@@ -566,7 +583,7 @@ index e411bafe..c841c48d 100644
              };
          }
 
-@@ -780,7 +871,7 @@ pub const Image = struct {
+@@ -780,7 +888,7 @@ pub const Image = struct {
          pub fn bytes(self: Data) ?[]const u8 {
              return switch (self) {
                  .complete => |data| data,
@@ -575,7 +592,7 @@ index e411bafe..c841c48d 100644
              };
          }
 
-@@ -792,10 +883,43 @@ pub const Image = struct {
+@@ -792,10 +900,43 @@ pub const Image = struct {
              switch (self.*) {
                  .complete => |data| if (data.len > 0) alloc.free(data),
                  .pending => {},
@@ -619,7 +636,7 @@ index e411bafe..c841c48d 100644
      pub fn deinit(self: *Image, alloc: Allocator) void {
          self.data.deinit(alloc);
          if (self.animation) |anim| {
-@@ -2159,3 +2283,404 @@ test "limits: temporary file medium allowed by limits" {
+@@ -2159,3 +2300,404 @@ test "limits: temporary file medium allowed by limits" {
      );
      defer loading.deinit(alloc);
  }
