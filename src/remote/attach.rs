@@ -1059,6 +1059,20 @@ impl RemoteSsh {
     }
 
     fn framed_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+        self.run_framed_user_shell(remote_command, !self.noninteractive)
+    }
+
+    /// Like `framed_user_shell_output`, but remote stderr is only captured,
+    /// never relayed to the terminal.
+    fn captured_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+        self.run_framed_user_shell(remote_command, false)
+    }
+
+    fn run_framed_user_shell(
+        &self,
+        remote_command: &str,
+        relay_stderr: bool,
+    ) -> io::Result<Output> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(super::process::cancelled());
         }
@@ -1070,17 +1084,42 @@ impl RemoteSsh {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = if self.noninteractive {
+        let child = command.spawn()?;
+        let output = if relay_stderr {
+            output_with_forwarded_stderr(child, None)
+        } else if self.noninteractive {
             wait_with_output_timeout(
-                command.spawn()?,
+                child,
                 None,
                 NONINTERACTIVE_SSH_COMMAND_TIMEOUT,
                 Arc::clone(&self.cancelled),
             )
         } else {
-            output_with_forwarded_stderr(command.spawn()?, None)
+            child.wait_with_output()
         }?;
         normalize_remote_output(output)
+    }
+
+    /// Authenticates interactive setup with SSH stderr on the terminal, where
+    /// servers such as Tailscale's check mode print their approval prompt.
+    /// `exit` means the same in every login shell, so no shell can complain.
+    fn open_interactive_transport(&self) -> io::Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(super::process::cancelled());
+        }
+        let child = self
+            .command()
+            .arg("-n")
+            .arg("exit")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output = output_with_forwarded_stderr(child, None)?;
+        if output.status.code() == Some(255) {
+            return Err(command_failed("remote SSH connection failed", &output));
+        }
+        Ok(())
     }
 
     fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
@@ -1725,10 +1764,12 @@ fn detect_remote_platform(ssh: &RemoteSsh) -> io::Result<DetectedRemotePlatform>
     // Interactive setup forwards SSH stderr to the terminal, so a Windows host
     // whose default shell is PowerShell would print a raw
     // `CommandNotFoundException` for the POSIX `/bin/sh` probe below. Probe for
-    // Windows first there so such hosts never receive a `/bin/sh` command.
-    // Background bridges capture stderr instead, so they keep the POSIX-first
-    // probe to avoid an extra round trip on Unix hosts.
+    // Windows first there so such hosts never receive a `/bin/sh` command; the
+    // transport is opened first so authentication output stays visible while
+    // the probe's own stderr is captured. Background bridges capture stderr
+    // instead, so they keep the POSIX-first probe to avoid extra round trips.
     if !ssh.noninteractive {
+        ssh.open_interactive_transport()?;
         if let Some(platform) = detect_windows_remote_platform(ssh, true)? {
             return Ok(platform);
         }
@@ -1777,13 +1818,14 @@ fn detect_windows_remote_platform(
     ssh: &RemoteSsh,
     native_shell_only: bool,
 ) -> io::Result<Option<DetectedRemotePlatform>> {
-    // Capture a Unix login shell's expected "command not found" in stdout;
-    // an ordinary failed probe is discarded without printing that diagnostic.
-    let command = format!("{} 2>&1", windows_platform_probe_command(native_shell_only));
+    // Stderr is captured, never relayed: a Unix login shell's expected "command
+    // not found" goes there, and fish reports it there even under `2>&1`.
     // Propagate cancellation, spawn failures, and SSH transport failures (exit
-    // 255) rather than retrying them against the POSIX probe, which would repeat
-    // an authentication failure. An ordinary command failure means "not Windows".
-    let output = ssh.framed_user_shell_output(&command)?;
+    // 255, with the captured stderr) rather than retrying them against the POSIX
+    // probe, which would repeat an authentication failure. An ordinary command
+    // failure means "not Windows".
+    let output =
+        ssh.captured_user_shell_output(&windows_platform_probe_command(native_shell_only))?;
     if output.status.code() == Some(255) {
         return Err(command_failed("remote platform detection failed", &output));
     }

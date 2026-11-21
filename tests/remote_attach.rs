@@ -76,6 +76,7 @@ fn check_authentication_output(framed_shell: bool) {
         format!(
             r#"#!/bin/sh
 case "$*" in
+    *" -n exit") exit 0 ;;
     *powershell.exe*) exit 1 ;;
 esac
 authenticate() {{
@@ -181,4 +182,92 @@ exit 255
         "failed SSH stderr should remain in the contextual error: {later_lines:?}"
     );
     assert!(!status.success());
+}
+
+#[test]
+fn interactive_windows_probe_keeps_remote_shell_errors_off_the_terminal() {
+    const SHELL_ERROR: &str = "fish: Unknown command: powershell.exe";
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "herdr-remote-probe-test-{}-{nonce}",
+        std::process::id()
+    ));
+    let mut cleanup = TestCleanup {
+        temp_dir: temp_dir.clone(),
+        child: None,
+        reader: None,
+    };
+    fs::create_dir_all(&temp_dir).expect("create test directory");
+    let ssh_path = temp_dir.join("ssh");
+    // The transport step authenticates with visible output; the Windows probe
+    // then meets a fish login shell, which reports the missing command on
+    // stderr even though the probe used to redirect it.
+    fs::write(
+        &ssh_path,
+        format!(
+            r#"#!/bin/sh
+case "$*" in
+    *" -n exit") printf '%s\n' '{CHECK_URL}' >&2; exit 0 ;;
+    *powershell.exe*) printf '%s\n' '{SHELL_ERROR}' >&2; exit 127 ;;
+esac
+case "$(cat)" in
+    *'uname -s'*) printf 'herdr-remote-output-ready:1\nLinux\nx86_64\n'; exit 0 ;;
+esac
+printf '%s\n' '{LATER_FAILURE}' >&2
+exit 255
+"#
+        ),
+    )
+    .expect("write fake ssh");
+    fs::set_permissions(&ssh_path, fs::Permissions::from_mode(0o755))
+        .expect("make fake ssh executable");
+
+    let inherited_path = std::env::var("PATH").unwrap_or_default();
+    let child = Command::new(env!("CARGO_BIN_EXE_herdr"))
+        .args(["--remote", "fish-host"])
+        .env("PATH", format!("{}:{inherited_path}", temp_dir.display()))
+        .env("HERDR_CONFIG_PATH", temp_dir.join("config.toml"))
+        .env_remove("HERDR_ENV")
+        .env_remove("HERDR_SESSION")
+        .env_remove("HERDR_SOCKET_PATH")
+        .env_remove("HERDR_CLIENT_SOCKET_PATH")
+        .env_remove("HERDR_REMOTE_BINARY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("start remote attach");
+    cleanup.child = Some(child);
+    let child = cleanup.child.as_mut().expect("registered child");
+    let mut stderr = child.stderr.take().expect("remote attach stderr");
+    let (done_tx, done_rx) = mpsc::channel();
+    cleanup.reader = Some(thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        let _ = done_tx.send(bytes);
+    }));
+    let bytes = done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("remote attach finished");
+    let status = child.wait().expect("wait for remote attach");
+    cleanup.child = None;
+    let output = String::from_utf8_lossy(&bytes);
+
+    assert!(!status.success(), "{output}");
+    assert!(
+        !output.contains(SHELL_ERROR),
+        "probe stderr leaked: {output}"
+    );
+    assert!(
+        output.contains(CHECK_URL),
+        "authentication output hidden: {output}"
+    );
+    assert!(
+        output.contains("error: remote binary discovery failed") && output.contains(LATER_FAILURE),
+        "setup did not continue past platform detection: {output}"
+    );
 }

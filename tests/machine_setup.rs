@@ -24,6 +24,7 @@ if [ "$FAKE_STRICT_HOST_KEY_FAILURE" = yes ] && [ "$strict_host_key_check" = yes
     echo 'Host key verification failed.' >&2
     exit 255
 fi
+if [ "$last" = exit ]; then exit 0; fi
 case "$*" in
     *powershell.exe*)
         if [ "$FAKE_WINDOWS_TRANSPORT_FAILURE" = yes ]; then echo 'ssh: connect to host fake-host port 22: Connection refused' >&2; exit 255; fi
